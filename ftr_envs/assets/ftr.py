@@ -23,16 +23,16 @@ FTR_CFG = ArticulationCfg(
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,
-            linear_damping=0.0,
-            angular_damping=0.0,
-            max_linear_velocity=100.0,
-            max_angular_velocity=100.0,
-            max_depenetration_velocity=1.0,
+            linear_damping=0.05,         # passive energy dissipation — damps pre-explosion velocities
+            angular_damping=0.05,        # passive rotational damping — prevents tumbling runaway
+            max_linear_velocity=10.0,    # m/s — 2× max expected forward vel; catches explosions
+            max_angular_velocity=720.0,  # deg/s (~12.6 rad/s) — allows terrain traversal, catches tumbling
+            max_depenetration_velocity=0.15,  # gentle depenetration — prevents launch impulses from flipper-terrain overlap
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=False,
-            solver_position_iteration_count=32,
-            solver_velocity_iteration_count=0,
+            solver_position_iteration_count=16,  # 32 → 16: still high, sufficient for tracked robot
+            solver_velocity_iteration_count=4,   # 1 → 4: critical — dissipates energy from contact penetrations
             sleep_threshold=0.005,
             stabilization_threshold=0.001,
         ),
@@ -48,14 +48,14 @@ FTR_CFG = ArticulationCfg(
         },
     ),
     actuators={
-        "baselink_wheel": ImplicitActuatorCfg(
-            joint_names_expr=[
-                *[f"L{i+1}RevoluteJoint" for i in range(8)],
-                *[f"R{i+1}RevoluteJoint" for i in range(8)],
-            ],
-            stiffness=1,
-            damping=100,
-        ),
+        # "baselink_wheel": ImplicitActuatorCfg(
+        #     joint_names_expr=[
+        #         *[f"L{i+1}RevoluteJoint" for i in range(8)],
+        #         *[f"R{i+1}RevoluteJoint" for i in range(8)],
+        #     ],
+        #     stiffness=1,
+        #     damping=100,
+        # ),
         "flipper_wheel": ImplicitActuatorCfg(
             joint_names_expr=[
                 *[f"LF{i+1}RevoluteJoint" for i in range(5)],
@@ -87,19 +87,24 @@ FTR_CFG = ArticulationCfg(
 )
 
 FTR_SIM_CFG = SimulationCfg(
-    dt=1 / 100,
+    dt=1 / 400,
     render_interval=5,
     disable_contact_processing=False,
     physx=PhysxCfg(
-        min_position_iteration_count=32,
-        max_velocity_iteration_count=0,
+        min_position_iteration_count=16,
+        max_velocity_iteration_count=4,              # 0 → 4: dissipates energy from penetrations (primary explosion fix)
+        bounce_threshold_velocity=0.2,               # contacts below 0.2 m/s don't bounce
+        gpu_max_rigid_contact_count=2**24,           # 2× default — prevents buffer overflow with many tracked-robot contacts
+        gpu_found_lost_pairs_capacity=2**22,         # 2× default
+        gpu_found_lost_aggregate_pairs_capacity=2**26,  # 2× default
+        gpu_total_aggregate_pairs_capacity=2**24,    # increased for contact-heavy scenes
+        gpu_collision_stack_size=2**27,              # 2× default — tracked robots generate deep collision stacks
     ),
     physics_material=sim_utils.RigidBodyMaterialCfg(
         friction_combine_mode="multiply",
         restitution_combine_mode="multiply",
-        static_friction=5.0,
-        dynamic_friction=5.0,
+        static_friction=0.9,
+        dynamic_friction=0.7,
         restitution=0.0,
     ),
-
 )

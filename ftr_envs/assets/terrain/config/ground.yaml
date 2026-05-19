@@ -7,11 +7,13 @@ prim_config:
     - prim_path: terrain
       attr_name: "xformOp:orient"
       value: [ 1.0, 0, 0, 0.0 ]
-
-map:
-  lower: [-11, -11, -0.1]
-  upper: [11, 11, 2]
-  cell_size: 0.05
+    - prim_path: terrain
+      attr_name: "xformOp:scale"
+      value: [ 2, 2, 1 ]
+map:                                                                                        
+  lower: [-22, -22, -0.1]
+  upper: [22, 22, 2]     
+  cell_size: 0.05  
 
 camera:
   position: [0, 40, 25]

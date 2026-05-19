@@ -41,23 +41,41 @@ class MapHelper:
 
         size_ = np.array(size)
 
-        pos = np.floor(positon[:2] / self.cell_size + self.compensation)
-        side_length = np.sqrt(size_[0] ** 2 + size_[1] ** 2) // self.cell_size
+        pos = np.floor(np.array(positon[:2], dtype=float) / self.cell_size + self.compensation)
+        side_length = int(np.sqrt(size_[0] ** 2 + size_[1] ** 2) // self.cell_size)
 
-        low = pos[:2] - side_length // 2
-        up = pos[:2] + side_length // 2
+        low = (pos[:2] - side_length // 2).astype(int)
+        up = (pos[:2] + side_length // 2).astype(int)
 
-        local_map = self.map[int(low[0]): int(up[0]) + 1, int(low[1]): int(up[1]) + 1]
+        map_h, map_w = self.map.shape
 
-        h, w = local_map.shape[0], local_map.shape[1]
+        # Clamp slice indices to valid map bounds
+        low_c = np.clip(low, 0, [map_h, map_w])
+        up_c = np.clip(up + 1, 0, [map_h, map_w])
+
+        if low_c[0] >= up_c[0] or low_c[1] >= up_c[1]:
+            # Robot entirely outside the map — return flat zero patch
+            full_side = side_length + 1
+            return np.zeros((full_side, full_side), dtype=self.map.dtype)
+
+        raw = self.map[low_c[0]: up_c[0], low_c[1]: up_c[1]]
+
+        # Pad with edge values when the robot is near the map boundary
+        pad_top    = int(low_c[0] - low[0])
+        pad_bottom = int((up[0] + 1) - up_c[0])
+        pad_left   = int(low_c[1] - low[1])
+        pad_right  = int((up[1] + 1) - up_c[1])
+
+        if pad_top or pad_bottom or pad_left or pad_right:
+            local_map = np.pad(raw, ((pad_top, pad_bottom), (pad_left, pad_right)), mode="edge")
+        else:
+            local_map = raw
+
+        h, w = local_map.shape
         center = (w // 2, h // 2)
 
-        try:
-            M = cv2.getRotationMatrix2D(center, -angle, 1.0)
-            rotated = cv2.warpAffine(local_map, M, (w, h))
-        except Exception as e:
-            traceback.print_exc()
-            return None
+        M = cv2.getRotationMatrix2D(center, -angle, 1.0)
+        rotated = cv2.warpAffine(local_map, M, (w, h))
 
         low_clip = np.array(center) - size_ / 2 // self.cell_size
         up_clip = np.array(center) + size_ / 2 // self.cell_size
@@ -133,6 +151,12 @@ class Terrain:
                 if attr_name == "xformOp:orient":
                     from pxr.Gf import Quatd
                     value = Quatd(*value)
+                elif attr_name == "xformOp:translate":
+                    from pxr.Gf import Vec3d
+                    value = Vec3d(*value)
+                elif attr_name == "xformOp:scale":
+                    from pxr.Gf import Vec3f
+                    value = Vec3f(*value)
 
                 try:
                     stage.GetPrimAtPath(_prim_path).GetAttribute(attr_name).Set(value)
@@ -179,3 +203,13 @@ class Terrain:
             for name, msg in error_msg.items():
                 print(f"{name}:")
                 print(textwrap.indent(msg, " " * 4))
+
+if __name__=="__main__":
+    # regenerate map in scale
+    import numpy as np                                                                          
+    scale = 2         
+    cells = int(440 * scale)  # 880 for 2×                                                      
+    m = np.zeros((cells, cells), dtype=np.float32)
+    with open("src/FTR-benchmark/ftr_envs/assets/terrain/map/ground.map", "wb") as f:           
+        np.save(f, m) 
+        print("done")

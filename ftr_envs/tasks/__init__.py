@@ -16,5 +16,5 @@ from pathlib import Path
 
 current_file_dir = Path(__file__).parent
 for directory in os.listdir(current_file_dir):
-    if os.path.isdir(current_file_dir / directory):
+    if os.path.isdir(current_file_dir / directory) and not directory.startswith('_'):
         importlib.import_module(f'ftr_envs.tasks.{directory}')

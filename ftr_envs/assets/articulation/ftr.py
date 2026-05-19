@@ -30,7 +30,7 @@ from ftr_envs.utils.prim import (
 )
 
 
-L = 0.5
+L = 0.3600
 
 class FtrWheelArticulation(Articulation):
 
@@ -39,7 +39,7 @@ class FtrWheelArticulation(Articulation):
         self._device = device
 
         self.flipper_joint_names = self.cfg.actuators["flipper_joint"].joint_names_expr
-        self.baselink_wheel_joint_names = self.cfg.actuators["baselink_wheel"].joint_names_expr
+        # self.baselink_wheel_joint_names = self.cfg.actuators["baselink_wheel"].joint_names_expr
         self.flipper_wheel_joint_names = self.cfg.actuators["flipper_wheel"].joint_names_expr
 
     def get_all_flipper_positions(self, indices=None, degree=False):
@@ -74,16 +74,16 @@ class FtrWheelArticulation(Articulation):
 
     def set_right_and_left_velocities(self, vels, indices=None):
         set_joint_func = self.set_joint_velocity_target
-        set_joint_func(
-            -vels[:, 0].unsqueeze(dim=-1).repeat(1, len(self.r_indices)) / self.baselink_radius,
-            env_ids=indices,
-            joint_ids=self.r_indices,
-        )
-        set_joint_func(
-            -vels[:, 1].unsqueeze(dim=-1).repeat(1, len(self.l_indices)) / self.baselink_radius,
-            env_ids=indices,
-            joint_ids=self.l_indices,
-        )
+        # set_joint_func(
+        #     -vels[:, 0].unsqueeze(dim=-1).repeat(1, len(self.r_indices)) / self.baselink_radius,
+        #     env_ids=indices,
+        #     joint_ids=self.r_indices,
+        # )
+        # set_joint_func(
+        #     -vels[:, 1].unsqueeze(dim=-1).repeat(1, len(self.l_indices)) / self.baselink_radius,
+        #     env_ids=indices,
+        #     joint_ids=self.l_indices,
+        # )
         set_joint_func(
             vels[:, 0].unsqueeze(dim=-1).repeat(1, len(self.fr_indices)) / self.flipper_radius,
             env_ids=indices,
@@ -98,18 +98,27 @@ class FtrWheelArticulation(Articulation):
     def find_idx(self):
         self.flipper_dof_idx_list = [self.find_joints(i)[0][0] for i in self.flipper_joint_names]
 
-        self.r_indices = [self.find_joints(i)[0][0] for i in self.baselink_wheel_joint_names if i.startswith("R")]
-        self.l_indices = [self.find_joints(i)[0][0] for i in self.baselink_wheel_joint_names if i.startswith("L")]
+        # self.r_indices = [self.find_joints(i)[0][0] for i in self.baselink_wheel_joint_names if i.startswith("R")]
+        # self.l_indices = [self.find_joints(i)[0][0] for i in self.baselink_wheel_joint_names if i.startswith("L")]
 
         self.fr_indices = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("R")]
         self.fl_indices = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("L")]
 
+        # Front/rear split for per-group velocity sign correction (front and rear joints have
+        # opposite axis orientations in the SDF, so they require opposite velocity signs).
+        # RL* = right-front wheels, RR* = right-rear wheels
+        # LF* = left-front wheels,  LR* = left-rear wheels
+        self.fr_front_indices = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("RL")]
+        self.fr_rear_indices  = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("RR")]
+        self.fl_front_indices = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("LF")]
+        self.fl_rear_indices  = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("LR")]
+
     def load_all_wheel_radius(self):
         prim_path = self.robot_prim_path
-        self.baselink_radius = torch.tensor(
-            [get_prim_radius(f"{prim_path}/wheel_list/wheel_left/L{i}/Render") for i in range(1, 9)],
-            device=self.device,
-        )
+        # self.baselink_radius = torch.tensor(
+        #     [get_prim_radius(f"{prim_path}/wheel_list/wheel_left/L{i}/Render") for i in range(1, 9)],
+        #     device=self.device,
+        # )
         flipper_radius = [
             get_prim_radius(f"{prim_path}/flipper_list/front_left_wheel/FL{i}/FlipperRender") for i in range(1, 6)
         ]
@@ -172,8 +181,8 @@ class FtrWheelArticulation(Articulation):
             get_prim_at_path(chassis_render).GetAttribute("physics:mass").Set(
                 robot_config.get("chassis_wheel_render_mass", 3)
             )
-            set_joint_stiffness(chassis_joint, self.cfg.actuators["baselink_wheel"].stiffness)
-            set_joint_damping(chassis_joint, self.cfg.actuators["baselink_wheel"].damping)
+            set_joint_stiffness(chassis_joint, robot_config.get("chassis_wheel_stiffness", 1))
+            set_joint_damping(chassis_joint, robot_config.get("chassis_wheel_damping", 100))
 
         for flipper_base in find_matching_prim_paths(f"{prim_path}/flipper_list/[fr]*/[FR]*"):
             flipper_render = f"{flipper_base}/FlipperRender"

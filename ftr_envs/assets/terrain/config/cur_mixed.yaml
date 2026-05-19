@@ -1,19 +1,45 @@
+# Two terrain USDs placed side by side:
+#   terrain     — the existing multi-obstacle cur_mixed scene
+#   ground_flat — a flat patch adjacent to cur_mixed's +X edge (world X ≈ 24)
+#
+# Positions are applied via prim_config (USD attribute Set) NOT via the obstacles
+# dict position/scale fields.  Using add_usd(position=...) calls create_prim with
+# world coordinates which registers a PhysX callback that fires during simulation
+# and violates eENABLE_DIRECT_GPU_API (PxArticulationLink::setGlobalPose error).
+#
+# flat_patch.usd must be generated once with:
+#   python /ws/scripts/make_flat_ground_usd.py \
+#       /ws/src/FTR-benchmark/ftr_envs/assets/terrain/usd/flat_patch.usd \
+#       --width 16 --depth 16 --thick 0.5
+# (run inside the isaaclab conda container)
+
+obstacles:
+  terrain:
+    path: usd/cur_mixed.usd
+  ground_flat:
+    path: usd/flat_patch.usd
+
 prim_config:
   set_attrs:
+    # cur_mixed terrain — same position as before
     - prim_path: terrain
       attr_name: "xformOp:translate"
       value: [25, 25, 0.5]
     - prim_path: terrain
       attr_name: "xformOp:orient"
-      value: [ 0, 0, 0, 1.0 ]
+      value: [0, 0, 0, 1.0]
+    # flat patch — centred at world X=27, adjacent to cur_mixed's +X edge (~X=24)
+    # z=0.375 puts the surface midway between ground (0.35) and cur_mixed (0.50)
+    # so both robot spawn heights (0.58 vs 0.625) are plausible
+    - prim_path: ground_flat
+      attr_name: "xformOp:translate"
+      value: [27, 0, 0.375]
 
 map:
-
   lower: [-27, -27, -1]
-  upper: [27, 27, 3]
+  upper: [40, 27, 3]
   cell_size: 0.05
 
 camera:
   position: [0, 40, 25]
   target: [0, 0, -5]
-
