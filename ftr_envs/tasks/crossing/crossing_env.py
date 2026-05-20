@@ -579,7 +579,7 @@ class CrossingEnv(FtrEnv):
         self._timeout_mask = timeout_idx
 
         self.extras["success"] = target_idx
-        self.extras["failure"] = (self._fail_mask.sum() / self.num_envs)
+        self.extras["failure"] = self._fail_mask
         self.extras["explosion"] = explosion_idx
 
         # Health stats — per-step scalars, logged to W&B.
