@@ -132,6 +132,7 @@ class FtrEnv(DirectRLEnv):
         self.cfg.robot_config = dict(self.cfg.robot_config)  # instance copy — don't mutate class default
         self.cfg.robot_config["flipper_material_friction"] = self.cfg.flipper_material_friction
         self.cfg.robot_config["wheel_material_friction"] = self.cfg.wheel_material_friction
+        self.cfg.robot_config["flipper_pos_max"] = self.cfg.flipper_pos_max_deg
         self.cfg.sim.physics_material.static_friction = self.cfg.terrain_static_friction
         self.cfg.sim.physics_material.dynamic_friction = self.cfg.terrain_dynamic_friction
         self.terrain_cfg = Terrain(cfg.terrain_name)
