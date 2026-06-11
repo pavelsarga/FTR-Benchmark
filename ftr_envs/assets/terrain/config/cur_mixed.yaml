@@ -29,11 +29,11 @@ prim_config:
       attr_name: "xformOp:orient"
       value: [0, 0, 0, 1.0]
     # flat patch — centred at world X=27, adjacent to cur_mixed's +X edge (~X=24)
-    # z=0.375 puts the surface midway between ground (0.35) and cur_mixed (0.50)
-    # so both robot spawn heights (0.58 vs 0.625) are plausible
+    # Box thick=0.5 => top surface at model z=0.25; translate z=0.225 => surface at world z=0.475
+    # matching the main terrain flat ground height (0.475)
     - prim_path: ground_flat
       attr_name: "xformOp:translate"
-      value: [27, 0, 0.375]
+      value: [27, 0, 0.225]
 
 map:
   lower: [-27, -27, -1]
