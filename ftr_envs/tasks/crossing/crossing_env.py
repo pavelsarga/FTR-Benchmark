@@ -59,7 +59,7 @@ class CrossingEnvCfg(FtrEnvCfg):
     # env
     num_actions = 4
     num_observations = 966
-    robot_type: str = "ftr"  # "ftr" or "marv"
+    robot_type: str = "marv"  # "ftr" or "marv"
     num_states = 0
     shaping_coef = 27.279373033235267
     shaping_gamma = 0.999

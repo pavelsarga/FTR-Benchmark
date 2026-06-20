@@ -15,6 +15,7 @@ NUM_WHEELS must match the _NUM_WHEELS constant in ftr_envs/assets/marv.py (defau
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -24,15 +25,25 @@ import yaml
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 _SCRIPT_DIR = Path(__file__).resolve().parent          # …/assets/scripts
-_WORKSPACE = _SCRIPT_DIR.parents[4]                   # …/robot_rodeo_gym_ws
-_MARV_ROOT = _WORKSPACE / "src/robot_rodeo_gym_ros2/robots/marv"
+# The xacro source (and the ROS2 packages it $(find)s — robot_rodeo_gym,
+# marv_description, kortex_description) live in a separate ROS2 workspace that is
+# only needed to *generate* the URDF, not to run the sim. Override with
+# ROBOT_RODEO_GYM_WS if that workspace lives somewhere other than the sibling
+# directory checked out next to this repo.
+_ROS_WORKSPACE = Path(os.environ.get("ROBOT_RODEO_GYM_WS", "/home/robot/workspaces/robot_rodeo_gym_ws"))
+_MARV_ROOT = _ROS_WORKSPACE / "src/robot_rodeo_gym_ros2/robots/marv"
 _XACRO = _MARV_ROOT / "urdf/marv.xacro"
 _COMMON_YAML = _MARV_ROOT / "config/description/common.yaml"
 _OUT_USD = _SCRIPT_DIR.parent / "usd" / "marv" / "marv.usd"  # …/assets/usd/marv/marv.usd
+# Local, version-controlled copy of the marv_description meshes/textures actually
+# referenced by marv.xacro (sensors disabled) — see _MARV_DESCRIPTION_DIR below.
+# Vendoring these means the generated USD never needs ROS_PACKAGE_PATH or the
+# external ROS2 workspace to resolve `package://marv_description/...` mesh URIs.
+_MARV_DESCRIPTION_DIR = _SCRIPT_DIR.parent / "marv_description"
 _NUM_WHEELS = 5
 
 # ROS2 setup to source before running xacro (resolves $(find ...) package paths)
-_ROS2_SETUP = _WORKSPACE / "install/setup.bash"
+_ROS2_SETUP = _ROS_WORKSPACE / "install/setup.bash"
 
 _XACRO_OVERRIDES = {
     "num_wheels": str(_NUM_WHEELS),
@@ -75,6 +86,26 @@ def _generate_urdf(xacro_path: Path, xacro_args: list) -> str:
     subprocess.run(["bash", "-c", bash_cmd], check=True)
     print(f"URDF written to {urdf_path}")
     return urdf_path
+
+
+def _localize_mesh_paths(urdf_path: str, marv_description_dir: Path) -> None:
+    """Rewrite package://marv_description/meshes/... URIs to the local vendored copy.
+
+    The omni.importer.urdf plugin only resolves package:// URIs via the
+    ROS_PACKAGE_PATH env var, which isn't set in this process (xacro generation
+    sources it in a throwaway subprocess). Rather than wiring that up, point the
+    URDF straight at the version-controlled mesh copy so mesh import works with
+    no dependency on the external ROS2 workspace being present at all.
+    """
+    text = Path(urdf_path).read_text()
+    localized = re.sub(
+        r"package://marv_description/(meshes/[^\"'\s]+)",
+        lambda m: (marv_description_dir / m.group(1)).as_posix(),
+        text,
+    )
+    missing = set(re.findall(r"package://marv_description/(meshes/[^\"'\s]+)", localized))
+    assert not missing, f"mesh path rewrite left package:// refs unresolved: {missing}"
+    Path(urdf_path).write_text(localized)
 
 
 def _convert_to_usd(urdf_path: str, usd_path: Path) -> None:
@@ -122,13 +153,16 @@ def _convert_to_usd(urdf_path: str, usd_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    print(f"Workspace : {_WORKSPACE}")
-    print(f"Xacro     : {_XACRO}")
-    print(f"Output USD: {_OUT_USD}")
-    assert _XACRO.exists(), f"Xacro not found: {_XACRO}"
+    print(f"ROS workspace : {_ROS_WORKSPACE}")
+    print(f"Xacro         : {_XACRO}")
+    print(f"Vendored meshes: {_MARV_DESCRIPTION_DIR}")
+    print(f"Output USD    : {_OUT_USD}")
+    assert _XACRO.exists(), f"Xacro not found: {_XACRO} (set ROBOT_RODEO_GYM_WS if the ROS2 workspace lives elsewhere)"
     assert _COMMON_YAML.exists(), f"common.yaml not found: {_COMMON_YAML}"
     assert _ROS2_SETUP.exists(), f"ROS2 setup not found: {_ROS2_SETUP}"
+    assert (_MARV_DESCRIPTION_DIR / "meshes").exists(), f"Vendored meshes not found: {_MARV_DESCRIPTION_DIR}"
 
     xacro_args = _build_xacro_args(_COMMON_YAML, _XACRO_OVERRIDES)
     urdf_path = _generate_urdf(_XACRO, xacro_args)
+    _localize_mesh_paths(urdf_path, _MARV_DESCRIPTION_DIR)
     _convert_to_usd(urdf_path, _OUT_USD)

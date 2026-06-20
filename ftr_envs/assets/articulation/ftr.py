@@ -101,17 +101,18 @@ class FtrWheelArticulation(Articulation):
         # self.r_indices = [self.find_joints(i)[0][0] for i in self.baselink_wheel_joint_names if i.startswith("R")]
         # self.l_indices = [self.find_joints(i)[0][0] for i in self.baselink_wheel_joint_names if i.startswith("L")]
 
-        self.fr_indices = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("R")]
-        self.fl_indices = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("L")]
-
-        # Front/rear split for per-group velocity sign correction (front and rear joints have
-        # opposite axis orientations in the SDF, so they require opposite velocity signs).
-        # RL* = right-front wheels, RR* = right-rear wheels
-        # LF* = left-front wheels,  LR* = left-rear wheels
-        self.fr_front_indices = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("RL")]
-        self.fr_rear_indices  = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("RR")]
+        # Joint-name prefixes don't match left/right side despite appearances: verified against
+        # each wheel joint's body0 parent link transform in ftr_v1.usd — LR* is physically
+        # attached to front_right_flipper_link and RL* to rear_left_flipper_link (front-right and
+        # rear-left are swapped relative to what the "L"/"R" first letter implies). True mapping:
+        # LF* = front-left, LR* = front-right, RL* = rear-left, RR* = rear-right.
         self.fl_front_indices = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("LF")]
-        self.fl_rear_indices  = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("LR")]
+        self.fr_front_indices = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("LR")]
+        self.fl_rear_indices  = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("RL")]
+        self.fr_rear_indices  = [self.find_joints(i)[0][0] for i in self.flipper_wheel_joint_names if i.startswith("RR")]
+
+        self.fl_indices = self.fl_front_indices + self.fl_rear_indices
+        self.fr_indices = self.fr_front_indices + self.fr_rear_indices
 
     def load_all_wheel_radius(self):
         prim_path = self.robot_prim_path

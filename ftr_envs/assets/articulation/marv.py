@@ -4,7 +4,13 @@ import numpy as np
 import torch
 
 from ftr_envs.assets.articulation.ftr import FtrWheelArticulation
-from ftr_envs.utils.prim import set_joint_damping, set_joint_max_vel, set_joint_stiffness, set_material_friction
+from ftr_envs.utils.prim import (
+    bind_physics_material,
+    ensure_physics_material,
+    set_joint_damping,
+    set_joint_max_vel,
+    set_joint_stiffness,
+)
 
 
 class MarvWheelArticulation(FtrWheelArticulation):
@@ -62,17 +68,27 @@ class MarvWheelArticulation(FtrWheelArticulation):
             set_joint_stiffness(joint_path, flipper_joint_cfg.stiffness)
             set_joint_damping(joint_path, flipper_joint_cfg.damping)
 
+        # The MARV URDF import has no PhysicsMaterial anywhere on the stage (unlike FTR's
+        # baked Looks/wheel_material + Looks/flipper_material), so friction has to be
+        # created from scratch and bound to the collision geometry directly.
+        wheel_material = ensure_physics_material(
+            f"{container}/Looks/wheel_material", robot_config.get("wheel_material_friction", 1)
+        )
+        flipper_material = ensure_physics_material(
+            f"{container}/Looks/flipper_material", robot_config.get("flipper_material_friction", 1)
+        )
+        for flipper_link in ("front_left_flipper", "front_right_flipper", "rear_left_flipper", "rear_right_flipper"):
+            bind_physics_material(f"{container}/{flipper_link}/collisions", flipper_material)
+
         # Wheel joints live under their parent flipper link, e.g.
-        # front_left_flipper_wheel1_j is under front_left_flipper
+        # front_left_flipper_wheel1_j is under front_left_flipper. The wheel *bodies*
+        # (front_left_flipper_wheel1, ...) are siblings of marv_description, not nested
+        # under their parent flipper link.
         flipper_wheel_cfg = self.cfg.actuators["flipper_wheel"]
-        flipper_friction = robot_config.get("flipper_material_friction", 1)
         for joint_name in flipper_wheel_cfg.joint_names_expr:
             parent_link = "_".join(joint_name.split("_")[:3])  # e.g. "front_left_flipper"
             joint_path = f"{container}/{parent_link}/{joint_name}"
             set_joint_stiffness(joint_path, flipper_wheel_cfg.stiffness)
             set_joint_damping(joint_path, flipper_wheel_cfg.damping)
             wheel_link = joint_name.replace("_j", "")
-            try:
-                set_material_friction(f"{container}/{parent_link}/{wheel_link}", flipper_friction)
-            except Exception:
-                pass  # MARV wheel prims from URDF import don't carry PhysicsMaterial attrs
+            bind_physics_material(f"{container}/{wheel_link}/collisions", wheel_material)

@@ -1,6 +1,7 @@
 import os
 from itertools import chain
 
+import omni.usd
 from omni.isaac.core.utils.prims import (
     create_prim,
     find_matching_prim_paths,
@@ -8,7 +9,7 @@ from omni.isaac.core.utils.prims import (
 )
 from omni.isaac.core.utils.rotations import euler_angles_to_quat
 from omni.isaac.core.utils.stage import add_reference_to_stage
-from pxr import Usd
+from pxr import Usd, UsdPhysics, UsdShade
 
 
 def set_material_color(path, color):
@@ -35,6 +36,35 @@ def set_material_friction(path, v):
     prim = get_prim_at_path(path)
     prim.GetAttribute("physics:dynamicFriction").Set(v)
     prim.GetAttribute("physics:staticFriction").Set(v)
+
+
+def ensure_physics_material(material_path, friction, restitution=0.0):
+    """Create (or update) a UsdPhysics material with the given friction at material_path.
+
+    Unlike set_material_friction, this works on prims that don't already carry
+    physics:*Friction attributes (e.g. assets imported without any PhysicsMaterial,
+    such as the MARV URDF import) by applying UsdPhysics.MaterialAPI itself.
+    """
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(material_path)
+    material = UsdShade.Material(prim) if prim.IsValid() else UsdShade.Material.Define(stage, material_path)
+    material_api = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    material_api.CreateStaticFrictionAttr().Set(friction)
+    material_api.CreateDynamicFrictionAttr().Set(friction)
+    material_api.CreateRestitutionAttr().Set(restitution)
+    return material
+
+
+def bind_physics_material(prim_path, material):
+    """Bind a UsdShade.Material (with UsdPhysics.MaterialAPI applied) to prim_path for physics."""
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return False
+    UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+        material, bindingStrength=UsdShade.Tokens.weakerThanDescendants, materialPurpose="physics"
+    )
+    return True
 
 
 def set_joint_stiffness(path, v):

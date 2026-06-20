@@ -254,10 +254,29 @@ class FtrEnv(DirectRLEnv):
 
     def _setup_scene(self):
         if self.cfg.robot_type == "marv":
+            import copy
+
             from ftr_envs.assets.marv import MARV_CFG
             from ftr_envs.assets.articulation.marv import MarvWheelArticulation
-            robot_cfg = MARV_CFG
+            robot_cfg = copy.deepcopy(MARV_CFG)
             RobotClass = MarvWheelArticulation
+            # train_ftr.py applies CLI/YAML physics overrides (robot_max_linear_velocity,
+            # solver_*_iterations, max_depenetration_velocity, damping, ...) directly onto
+            # self.cfg.robot (FTR_CFG) before env construction. MARV_CFG is a separate
+            # ArticulationCfg instance those overrides never touch, so copy the
+            # already-overridden values across here rather than silently running MARV
+            # with marv.py's hardcoded defaults.
+            src_rigid = self.cfg.robot.spawn.rigid_props
+            src_artic = self.cfg.robot.spawn.articulation_props
+            dst_rigid = robot_cfg.spawn.rigid_props
+            dst_artic = robot_cfg.spawn.articulation_props
+            dst_rigid.max_linear_velocity = src_rigid.max_linear_velocity
+            dst_rigid.max_angular_velocity = src_rigid.max_angular_velocity
+            dst_rigid.max_depenetration_velocity = src_rigid.max_depenetration_velocity
+            dst_rigid.linear_damping = src_rigid.linear_damping
+            dst_rigid.angular_damping = src_rigid.angular_damping
+            dst_artic.solver_position_iteration_count = src_artic.solver_position_iteration_count
+            dst_artic.solver_velocity_iteration_count = src_artic.solver_velocity_iteration_count
         else:
             robot_cfg = self.cfg.robot
             RobotClass = FtrWheelArticulation
