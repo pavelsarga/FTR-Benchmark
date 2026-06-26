@@ -6,6 +6,7 @@ import torch
 from ftr_envs.assets.articulation.ftr import FtrWheelArticulation
 from ftr_envs.utils.prim import (
     bind_physics_material,
+    disable_collision_geometry,
     ensure_physics_material,
     set_collision_offsets,
     set_cylinder_collision_radius,
@@ -160,6 +161,25 @@ class MarvWheelArticulation(FtrWheelArticulation):
             set_joint_damping(joint_path, flipper_wheel_cfg.damping)
             wheel_link = joint_name.replace("_j", "")
             bind_physics_material(f"{container}/{wheel_link}/collisions", wheel_material)
+
+        # The MARV URDF flipper link itself carries collision geometry (3 boxes + 2
+        # cylinders at the wheel-end positions) that physically overlaps with the driven
+        # fake-wheel child-link cylinders (wheel1 at the pivot, wheel5 at the far end).
+        # Having a near-massless rigid body (flipper_mass=1e-05 kg) and a real mass body
+        # (0.73 kg wheel) at the same position both contacting terrain simultaneously
+        # produces two contact manifolds at the same point, creating PhysX contact
+        # instability (duplicated impulses, solver oscillation). Disabling the flipper
+        # arm body's own collision geometry leaves only the 5 driven wheel cylinders for
+        # ground contact — they already span the full arm length so the coverage is
+        # equivalent. Default: enabled (True) since preliminary testing shows this is
+        # the most likely cause of the contact ringing and sluggish motion; opt-out via
+        # disable_flipper_arm_collision: false in robot_config.
+        if robot_config.get("disable_flipper_arm_collision", True):
+            for flipper_link in ("front_left_flipper", "front_right_flipper", "rear_left_flipper", "rear_right_flipper"):
+                n = disable_collision_geometry(f"{container}/{flipper_link}")
+                if n == 0:
+                    import warnings
+                    warnings.warn(f"disable_flipper_arm_collision: no collision shapes found at {container}/{flipper_link}")
 
         # wheel1 (the big-radius, leading wheel on every flipper, closest to the pivot
         # and bearing the most ground-contact load) intermittently gets its joint

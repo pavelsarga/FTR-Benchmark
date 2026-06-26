@@ -98,6 +98,14 @@ class FtrEnvCfg(DirectRLEnvCfg):
     # snag terrain mesh features more often. 1.0 = unchanged. No effect on robot_type "ftr".
     wheel1_collision_radius_scale: float = 1.0
 
+    # MARV only: disable the flipper arm body's own collision geometry (3 boxes + 2 end
+    # cylinders imported from the URDF). The arm body (mass≈0) has collision shapes that
+    # exactly overlap the driven child-link wheel cylinders (wheel1 at the pivot, wheel5 at
+    # the far end), creating two contact bodies at the same position simultaneously —
+    # a known source of contact instability in PhysX. When True, only the 5 driven wheel
+    # cylinders contact terrain. No effect on robot_type "ftr".
+    disable_flipper_arm_collision: bool = True
+
     # Friction — settable via env_cfg_overrides in YAML; defaults match robot_config below
     # so old configs that don't set these fields continue to work unchanged.
     flipper_material_friction: float = 5.0    # rigid flipper arm (steel chassis)
@@ -149,6 +157,7 @@ class FtrEnv(DirectRLEnv):
         self.cfg.robot_config["flipper_pos_max"] = self.cfg.flipper_pos_max_deg
         self.cfg.robot_config["legacy_ftr_turning"] = self.cfg.legacy_ftr_turning
         self.cfg.robot_config["wheel1_collision_radius_scale"] = self.cfg.wheel1_collision_radius_scale
+        self.cfg.robot_config["disable_flipper_arm_collision"] = self.cfg.disable_flipper_arm_collision
         self.cfg.sim.physics_material.static_friction = self.cfg.terrain_static_friction
         self.cfg.sim.physics_material.dynamic_friction = self.cfg.terrain_dynamic_friction
         self.terrain_cfg = Terrain(cfg.terrain_name)

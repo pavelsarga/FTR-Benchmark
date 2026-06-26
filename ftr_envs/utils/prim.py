@@ -56,6 +56,29 @@ def set_cylinder_collision_radius(prim_path, radius):
     return True
 
 
+def disable_collision_geometry(prim_path):
+    """Disable all PhysX collision shapes under prim_path.
+
+    Walks the prim subtree and sets physics:collisionEnabled=False on every prim
+    that carries a UsdPhysics.CollisionAPI. Does NOT affect sibling or cousin prims
+    (e.g. child link collision shapes connected via joints are stored as siblings in
+    the USD stage after URDF import, so they are unaffected).
+
+    Returns the number of collision shapes disabled, or 0 if prim_path is invalid.
+    """
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return 0
+    disabled = 0
+    for child in Usd.PrimRange(prim):
+        api = UsdPhysics.CollisionAPI(child)
+        if api:
+            api.CreateCollisionEnabledAttr(False)
+            disabled += 1
+    return disabled
+
+
 def set_collision_offsets(prim_path, contact_offset, rest_offset=0.0):
     """Set PhysX contact/rest offset on a collision prim.
 
