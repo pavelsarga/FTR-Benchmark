@@ -23,7 +23,7 @@ MARV_CFG = ArticulationCfg(
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=False,
-            solver_position_iteration_count=4,
+            solver_position_iteration_count=5,
             solver_velocity_iteration_count=1,
             sleep_threshold=0.005,
             stabilization_threshold=0.001,
@@ -43,7 +43,14 @@ MARV_CFG = ArticulationCfg(
                 *[f"rear_left_flipper_wheel{i}_j" for i in range(1, _NUM_WHEELS + 1)],
                 *[f"rear_right_flipper_wheel{i}_j" for i in range(1, _NUM_WHEELS + 1)],
             ],
-            stiffness=1,
+            # stiffness=0: this is a velocity-only drive (set_joint_velocity_target is the
+            # only thing ever called on these joints, never set_joint_position_target). A
+            # nonzero stiffness here creates a phantom restoring torque toward the stale
+            # position target (0, frozen since reset) that grows with accumulated wheel
+            # rotation on these continuous joints — confirmed via teleop A/B test to reduce
+            # contact chatter and let the robot actually cross an obstacle it was stuck on
+            # at stiffness=1.
+            stiffness=0,
             damping=100,
         ),
         "flipper_joint": ImplicitActuatorCfg(
@@ -56,7 +63,7 @@ MARV_CFG = ArticulationCfg(
             stiffness=3e4,
             damping=1000,
             effort_limit=1000,
-            velocity_limit=90,
+            velocity_limit=180,
             armature=100,
         ),
     },

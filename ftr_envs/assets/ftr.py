@@ -63,7 +63,14 @@ FTR_CFG = ArticulationCfg(
                 *[f"RL{i+1}RevoluteJoint" for i in range(5)],
                 *[f"RR{i+1}RevoluteJoint" for i in range(5)],
             ],
-            stiffness=1,
+            # stiffness=0: this is a velocity-only drive (set_joint_velocity_target is the
+            # only thing ever called on these joints, never set_joint_position_target). A
+            # nonzero stiffness here creates a phantom restoring torque toward the stale
+            # position target (0, frozen since reset) that grows with accumulated wheel
+            # rotation on these continuous joints — confirmed via teleop A/B test (on MARV)
+            # to reduce contact chatter and let the robot actually cross an obstacle it was
+            # stuck on at stiffness=1. Same bug, same fix applied here for FTR.
+            stiffness=0,
             damping=100,
         ),
         "flipper_joint": ImplicitActuatorCfg(

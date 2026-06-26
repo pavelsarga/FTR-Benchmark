@@ -38,6 +38,67 @@ def set_material_friction(path, v):
     prim.GetAttribute("physics:staticFriction").Set(v)
 
 
+def set_cylinder_collision_radius(prim_path, radius):
+    """Set the radius of a UsdGeomCylinder collision shape directly.
+
+    Independent of any kinematic radius used elsewhere (e.g. for wheel velocity-target
+    scaling) — use this to test whether a wheel's *contact geometry* size, on its own,
+    affects how often it snags on terrain mesh features, without changing how fast the
+    wheel is commanded to roll.
+    """
+    from pxr import UsdGeom
+
+    prim = get_prim_at_path(prim_path)
+    cyl = UsdGeom.Cylinder(prim)
+    if not cyl:
+        return False
+    cyl.GetRadiusAttr().Set(radius)
+    return True
+
+
+def disable_collision_geometry(prim_path):
+    """Disable all PhysX collision shapes under prim_path.
+
+    Walks the prim subtree and sets physics:collisionEnabled=False on every prim
+    that carries a UsdPhysics.CollisionAPI. Does NOT affect sibling or cousin prims
+    (e.g. child link collision shapes connected via joints are stored as siblings in
+    the USD stage after URDF import, so they are unaffected).
+
+    Returns the number of collision shapes disabled, or 0 if prim_path is invalid.
+    """
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return 0
+    disabled = 0
+    for child in Usd.PrimRange(prim):
+        api = UsdPhysics.CollisionAPI(child)
+        if api:
+            api.CreateCollisionEnabledAttr(False)
+            disabled += 1
+    return disabled
+
+
+def set_collision_offsets(prim_path, contact_offset, rest_offset=0.0):
+    """Set PhysX contact/rest offset on a collision prim.
+
+    PhysX auto-derives default offsets from object size, so larger collision shapes
+    get a larger speculative-contact margin than smaller ones. Call with an explicit
+    small contact_offset to tighten that margin for an oversized/high-load shape.
+    Must be called before the simulation starts (e.g. from set_robot_env).
+    """
+    from pxr import PhysxSchema
+
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return False
+    api = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+    api.GetContactOffsetAttr().Set(contact_offset)
+    api.GetRestOffsetAttr().Set(rest_offset)
+    return True
+
+
 def ensure_physics_material(material_path, friction, restitution=0.0):
     """Create (or update) a UsdPhysics material with the given friction at material_path.
 

@@ -33,6 +33,10 @@ from ftr_envs.utils.prim import (
 L = 0.3600
 
 class FtrWheelArticulation(Articulation):
+    # Pivot-to-wheel5 distance (m), wheel1 sits at the pivot (distance 0) for every
+    # flipper on both FTR and MARV — see load_wheel_pivot_distances(). Measured directly
+    # from ftr_v1.usd (front_left_flipper pivot -> FL5 world position).
+    _AXLE_DISTANCE = 0.34
 
     def __init__(self, cfg: ArticulationCfg, device):
         super().__init__(cfg)
@@ -72,6 +76,33 @@ class FtrWheelArticulation(Articulation):
 
         return self.set_right_and_left_velocities(vels, indices=indices)
 
+    def _flipper_rotation_correction(self, wheel_flipper_dof, indices=None):
+        """Forward (chassis-x) ground-contact velocity each wheel picks up purely from its
+        own flipper arm actively rotating about its pivot — independent of the wheel's own
+        spin or the chassis's v/w.
+
+        Every wheel is rigidly mounted to its flipper arm at a fixed distance r from the
+        pivot, not on a free-floating belt, so when the arm rotates with angular velocity
+        theta_dot, the wheel's center sweeps a small arc and picks up a real velocity
+        component of r * sin(theta) * theta_dot along the chassis x-axis (theta = the raw,
+        unsigned joint angle — zero at theta=0 since the wheel only moves vertically when
+        the arm is flat, growing as the arm tilts). set_right_and_left_velocities below only
+        ever solved for the chassis-commanded surface speed, so an actively-rotating flipper
+        was forcing wheel-ground slip equal to this term. Subtracting it from the commanded
+        surface speed before converting to a wheel spin target removes that slip.
+
+        NOTE: the sign here assumes the same world-frame rotation handedness verified for
+        the wheel spin joints (uniformly +Y across all four flippers) carries over to the
+        flipper pivot joints. If this correction makes things worse rather than better,
+        flip the sign.
+        """
+        dof_idx = torch.as_tensor(wheel_flipper_dof, device=self.device, dtype=torch.long)
+        joint_pos = self.data.joint_pos if indices is None else self.data.joint_pos[indices]
+        joint_vel = self.data.joint_vel if indices is None else self.data.joint_vel[indices]
+        theta = joint_pos[:, dof_idx]
+        theta_dot = joint_vel[:, dof_idx]
+        return self.wheel_pivot_distance * torch.sin(theta) * theta_dot
+
     def set_right_and_left_velocities(self, vels, indices=None):
         set_joint_func = self.set_joint_velocity_target
         # set_joint_func(
@@ -84,13 +115,15 @@ class FtrWheelArticulation(Articulation):
         #     env_ids=indices,
         #     joint_ids=self.l_indices,
         # )
+        fr_correction = self._flipper_rotation_correction(self.fr_wheel_flipper_dof, indices=indices)
+        fl_correction = self._flipper_rotation_correction(self.fl_wheel_flipper_dof, indices=indices)
         set_joint_func(
-            vels[:, 0].unsqueeze(dim=-1).repeat(1, len(self.fr_indices)) / self.flipper_radius,
+            (vels[:, 0].unsqueeze(dim=-1).repeat(1, len(self.fr_indices)) - fr_correction) / self.flipper_radius,
             env_ids=indices,
             joint_ids=self.fr_indices,
         )
         set_joint_func(
-            vels[:, 1].unsqueeze(dim=-1).repeat(1, len(self.fl_indices)) / self.flipper_radius,
+            (vels[:, 1].unsqueeze(dim=-1).repeat(1, len(self.fl_indices)) - fl_correction) / self.flipper_radius,
             env_ids=indices,
             joint_ids=self.fl_indices,
         )
@@ -114,6 +147,18 @@ class FtrWheelArticulation(Articulation):
         self.fl_indices = self.fl_front_indices + self.fl_rear_indices
         self.fr_indices = self.fr_front_indices + self.fr_rear_indices
 
+        # Per-wheel parent-flipper DOF index (into flipper_dof_idx_list, ordered
+        # [front_left, front_right, rear_left, rear_right]), aligned with fl_indices/
+        # fr_indices — used by _flipper_rotation_correction to read each wheel's own
+        # flipper's raw joint angle/velocity.
+        front_left_dof, front_right_dof, rear_left_dof, rear_right_dof = self.flipper_dof_idx_list
+        self.fl_wheel_flipper_dof = (
+            [front_left_dof] * len(self.fl_front_indices) + [rear_left_dof] * len(self.fl_rear_indices)
+        )
+        self.fr_wheel_flipper_dof = (
+            [front_right_dof] * len(self.fr_front_indices) + [rear_right_dof] * len(self.fr_rear_indices)
+        )
+
     def load_all_wheel_radius(self):
         prim_path = self.robot_prim_path
         # self.baselink_radius = torch.tensor(
@@ -125,6 +170,17 @@ class FtrWheelArticulation(Articulation):
         ]
         self.flipper_radius = torch.tensor(
             flipper_radius + flipper_radius[::-1],
+            device=self.device,
+        )
+        self.load_wheel_pivot_distances()
+
+    def load_wheel_pivot_distances(self):
+        # Mirrors load_all_wheel_radius's front/reversed-rear layout exactly, so this stays
+        # aligned with fl_indices/fr_indices — see _flipper_rotation_correction.
+        distances = list(np.linspace(0.0, self._AXLE_DISTANCE, 5))
+        self.wheel_pivot_distance = torch.tensor(
+            distances + distances[::-1],
+            dtype=torch.float32,
             device=self.device,
         )
 
