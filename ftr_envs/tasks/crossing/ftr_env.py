@@ -84,6 +84,20 @@ class FtrEnvCfg(DirectRLEnvCfg):
     track_ang_vel_max: float = 1.0   # max |w| (rad/s)
     fixed_forward_vel: float | None = None  # if set, overrides policy linear velocity with this constant (m/s)
 
+    # MarvWheelArticulation normally groups wheel joints into true left/right side
+    # (af6aa92 fixed the equivalent FTR LF/LR/RL/RR mislabeling bug). Policies trained on
+    # FTR *before* that fix learned to steer under the old (buggy) front/rear wheel-group
+    # split rather than true left/right — set this to True when evaluating such an old
+    # checkpoint on robot_type "marv" so it gets the controls it was actually trained with.
+    # No effect on robot_type "ftr" (FtrWheelArticulation always uses the fixed grouping).
+    legacy_ftr_turning: bool = False
+
+    # Experiment: scales the *collision-only* radius of wheel1 on every MARV flipper
+    # (the kinematic radius used for velocity-target scaling is unaffected), to test
+    # whether wheel1's larger contact geometry (vs FTR's smaller equivalent) makes it
+    # snag terrain mesh features more often. 1.0 = unchanged. No effect on robot_type "ftr".
+    wheel1_collision_radius_scale: float = 1.0
+
     # Friction — settable via env_cfg_overrides in YAML; defaults match robot_config below
     # so old configs that don't set these fields continue to work unchanged.
     flipper_material_friction: float = 5.0    # rigid flipper arm (steel chassis)
@@ -133,6 +147,8 @@ class FtrEnv(DirectRLEnv):
         self.cfg.robot_config["flipper_material_friction"] = self.cfg.flipper_material_friction
         self.cfg.robot_config["wheel_material_friction"] = self.cfg.wheel_material_friction
         self.cfg.robot_config["flipper_pos_max"] = self.cfg.flipper_pos_max_deg
+        self.cfg.robot_config["legacy_ftr_turning"] = self.cfg.legacy_ftr_turning
+        self.cfg.robot_config["wheel1_collision_radius_scale"] = self.cfg.wheel1_collision_radius_scale
         self.cfg.sim.physics_material.static_friction = self.cfg.terrain_static_friction
         self.cfg.sim.physics_material.dynamic_friction = self.cfg.terrain_dynamic_friction
         self.terrain_cfg = Terrain(cfg.terrain_name)
