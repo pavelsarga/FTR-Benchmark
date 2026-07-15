@@ -2,7 +2,7 @@
 """
 ====================================
 @File Name ：train.py
-@Time ： 2024/9/30 下午7:30
+@Time ： 2024/9/30 PM7:30
 @Program IDE ：PyCharm
 @Create by Author ： hongchuan zhang
 ====================================

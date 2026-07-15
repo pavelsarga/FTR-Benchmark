@@ -2,7 +2,7 @@
 """
 ====================================
 @File Name ：push_cube_env.py
-@Time ： 2024/10/15 下午2:12
+@Time ： 2024/10/15 PM2:12
 @Program IDE ：PyCharm
 @Create by Author ： hongchuan zhang
 ====================================

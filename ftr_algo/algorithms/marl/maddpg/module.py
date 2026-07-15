@@ -246,7 +246,7 @@ class MADDPG:
         sobs = data[id]["sobs"]
 
         jact = []
-        # 得到其他智能体输出
+        # get other agents' output
         for pid in range(self.num_agents):
             action = self.policy[pid].actor.pi(data[id]["obs"])
             jact.append(action)
@@ -343,7 +343,7 @@ class MADDPG:
                 rewards_batch = buffer[id].rewards[indices]
                 dones_batch = buffer[id].dones[indices]
 
-                # TODO:  这里有点占空间 need 修改
+                # TODO: takes up memory space, needs refactoring
                 sample = {
                     "obs": obs_batch,
                     "sobs": states_batch,

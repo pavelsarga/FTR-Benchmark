@@ -2,7 +2,7 @@
 """
 ====================================
 @File Name ：terrain_cfg.py
-@Time ： 2024/9/29 下午6:16
+@Time ： 2024/9/29 PM6:16
 @Program IDE ：PyCharm
 @Create by Author ： hongchuan zhang
 ====================================
@@ -33,10 +33,10 @@ class MapHelper:
     def get_obs(self, positon, angle, size):
         """
 
-        :param positon: 裁剪的世界坐标中心点
-        :param angle: 旋转角度
-        :param size_: 观测范围大小
-        :return: 裁剪后高程图
+        :param positon: center point in world coordinates for cropping
+        :param angle: rotation angle
+        :param size_: observation range size
+        :return: cropped elevation map
         """
 
         size_ = np.array(size)

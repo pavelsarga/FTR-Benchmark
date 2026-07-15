@@ -42,7 +42,7 @@ class ReplayBuffer:
 
     def add_transitions(self, observations, states, actions, rewards, next_obs, dones):
         if self.step >= self.replay_size:
-            # TODO: 有点bug 清不掉0 后续改下
+            # TODO: slight bug, can't clear zeros; fix later
             self.step = (self.step + 1) % self.replay_size
             self.fullfill = True
             # raise AssertionError("Rollout buffer overflow")
@@ -83,7 +83,7 @@ class ReplayBuffer:
         # batch = BatchSampler(subset, mini_batch_size, drop_last=True)
         # return batch
 
-        # TODO: 可以随机选择batch_size
+        # TODO: can randomly select batch_size
         batch_size = self.batch_size
         mini_batch_size = batch_size // num_mini_batches
 

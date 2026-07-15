@@ -2,7 +2,7 @@
 """
 ====================================
 @File Name ：torch.py
-@Time ： 2024/10/12 下午8:50
+@Time ： 2024/10/12 PM8:50
 @Program IDE ：PyCharm
 @Create by Author ： hongchuan zhang
 ====================================

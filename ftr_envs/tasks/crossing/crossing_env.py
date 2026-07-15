@@ -2,7 +2,7 @@
 """
 ====================================
 @File Name ：crossing.py
-@Time ： 2024/9/29 下午12:07
+@Time ： 2024/9/29 PM12:07
 @Program IDE ：PyCharm
 @Create by Author ： hongchuan zhang
 ====================================
@@ -28,7 +28,7 @@ _log = logging.getLogger(__name__)
 @torch.jit.script
 def point_in_rotated_ellipse(x, y, h, k, a, b, theta):
     """
-    其中 (h, k) 是椭圆的中心坐标，a 和 b 分别是椭圆在旋转前 x 轴和 y 轴上的半长轴和半短轴的长度，theta 是椭圆的旋转角度（弧度制）。
+    where (h, k) is the center of the ellipse, a and b are the semi-major and semi-minor axes along the x and y axes before rotation, and theta is the rotation angle of the ellipse (in radians).
     """
     cos_theta = torch.cos(theta)
     sin_theta = torch.sin(theta)

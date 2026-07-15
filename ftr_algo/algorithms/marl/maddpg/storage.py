@@ -66,7 +66,7 @@ class ReplayBuffer:
         dones,
     ):
         if self.step >= self.num_transitions_per_env:
-            # TODO: 有点bug 清不掉0 后续改下
+            # TODO: slight bug, can't clear zeros; fix later
             self.step = (self.step + 1) % self.num_transitions_per_env
             # raise AssertionError("Rollout buffer overflow")
             self.fullfill = True
@@ -96,7 +96,7 @@ class ReplayBuffer:
         return trajectory_lengths.float().mean(), self.rewards.mean()
 
     def mini_batch_generator(self, num_mini_batches):
-        # TODO: 可以随机选择batch_size
+        # TODO: can randomly select batch_size
         batch_size = self.batch_size
         mini_batch_size = batch_size // num_mini_batches
         batch = []

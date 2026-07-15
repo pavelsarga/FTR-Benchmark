@@ -2,7 +2,7 @@
 """
 ====================================
 @File Name ：omega_conf.py
-@Time ： 2024/10/8 下午1:57
+@Time ： 2024/10/8 PM1:57
 @Program IDE ：PyCharm
 @Create by Author ： hongchuan zhang
 ====================================

@@ -2,7 +2,7 @@
 """
 ====================================
 @File Name ：ftr.py
-@Time ： 2024/9/29 下午2:13
+@Time ： 2024/9/29 PM2:13
 @Program IDE ：PyCharm
 @Create by Author ： hongchuan zhang
 ====================================

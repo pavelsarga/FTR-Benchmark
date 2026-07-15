@@ -2,7 +2,7 @@
 """
 ====================================
 @File Name ：__init__.py.py
-@Time ： 2024/5/21 下午7:42
+@Time ： 2024/5/21 PM7:42
 @Program IDE ：PyCharm
 @Create by Author ： hongchuan zhang
 ====================================

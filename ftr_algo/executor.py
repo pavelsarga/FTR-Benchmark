@@ -2,7 +2,7 @@
 """
 ====================================
 @File Name ：register.py
-@Time ： 2024/5/22 下午12:42
+@Time ： 2024/5/22 PM12:42
 @Program IDE ：PyCharm
 @Create by Author ： hongchuan zhang
 ====================================
