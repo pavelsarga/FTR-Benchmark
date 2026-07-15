@@ -2,7 +2,7 @@
 """
 ====================================
 @File Name ：ftr_env.py
-@Time ： 2024/9/29 下午12:11
+@Time ： 2024/9/29 PM12:11
 @Program IDE ：PyCharm
 @Create by Author ： hongchuan zhang
 ====================================
@@ -79,6 +79,19 @@ class FtrEnvCfg(DirectRLEnvCfg):
     initial_flipper_range = (0, 0)
     spawn_yaw_range: float = 0.0              # ± yaw perturbation at spawn (degrees)
     flipper_pos_max_deg: float | None = 90.0  # None = lock flippers horizontal (pos=0)
+
+    # MARV only: per-direction flipper angle limits (degrees). When all four are set,
+    # replaces the symmetric ±flipper_pos_max_deg clamp with asymmetric per-pair limits.
+    # Convention (matches flipper_training / MARV URDF):
+    #   front up   = negative angle  → front_up_deg is the magnitude of the negative bound
+    #   front down = positive angle  → front_down_deg is the positive bound
+    #   rear  up   = positive angle  → back_up_deg is the positive bound
+    #   rear  down = negative angle  → back_down_deg is the magnitude of the negative bound
+    # None on any field disables the asymmetric mode and falls back to flipper_pos_max_deg.
+    marv_flipper_front_up_deg: float | None = None
+    marv_flipper_front_down_deg: float | None = None
+    marv_flipper_back_up_deg: float | None = None
+    marv_flipper_back_down_deg: float | None = None
     track_vel_max: float = 0.7     # max |v| (m/s)
     track_vel_scale: float = 1.0   # multiplicative scale applied to track velocities before sending to robot
     track_ang_vel_max: float = 1.0   # max |w| (rad/s)
@@ -272,9 +285,18 @@ class FtrEnv(DirectRLEnv):
             self._calc_comp_flipper_pos(self.flipper_target_pos),
             std=self.flipper_pos_noise_std
         )
+        marv_asym_active = (
+            self.cfg.robot_type == "marv"
+            and all(v is not None for v in (
+                self.cfg.marv_flipper_front_up_deg,
+                self.cfg.marv_flipper_front_down_deg,
+                self.cfg.marv_flipper_back_up_deg,
+                self.cfg.marv_flipper_back_down_deg,
+            ))
+        )
         self._robot.set_all_flipper_position_targets(
             real_flipper_cmd,
-            clip_value=np.deg2rad(self.cfg.robot_config["flipper_pos_max"])
+            clip_value=None if marv_asym_active else np.deg2rad(self.cfg.robot_config["flipper_pos_max"]),
         )
 
     def _setup_scene(self):
@@ -440,12 +462,24 @@ class FtrEnv(DirectRLEnv):
             # inverted relative to FTR's user convention → negate to align.
             flipper_sign = -1 if self.cfg.flipper_style else 1
             flipper_delta = flipper_sign * self.actions[:, flipper_offset:] * self.flipper_dt
-            limit = np.deg2rad(self.cfg.flipper_pos_max_deg)
-            self.flipper_target_pos = torch.clip(
-                torch.deg2rad(flipper_delta) + self.flipper_positions,
-                -limit,
-                limit,
+            next_pos = torch.deg2rad(flipper_delta) + self.flipper_positions
+            marv_limits = (
+                self.cfg.marv_flipper_front_up_deg,
+                self.cfg.marv_flipper_front_down_deg,
+                self.cfg.marv_flipper_back_up_deg,
+                self.cfg.marv_flipper_back_down_deg,
             )
+            if self.cfg.robot_type == "marv" and all(v is not None for v in marv_limits):
+                # Asymmetric per-pair limits for MARV.
+                # Front [0:2]: up = negative angle, down = positive angle
+                # Rear  [2:4]: up = positive angle, down = negative angle
+                front_up, front_down, back_up, back_down = (np.deg2rad(v) for v in marv_limits)
+                low  = torch.tensor([-front_up,   -front_up,   -back_down, -back_down], device=self.device, dtype=next_pos.dtype)
+                high = torch.tensor([ front_down,  front_down,  back_up,    back_up],   device=self.device, dtype=next_pos.dtype)
+                self.flipper_target_pos = torch.clamp(next_pos, low, high)
+            else:
+                limit = np.deg2rad(self.cfg.flipper_pos_max_deg)
+                self.flipper_target_pos = torch.clip(next_pos, -limit, limit)
         else:
             self.flipper_target_pos.zero_()
 
@@ -506,7 +540,7 @@ class FtrEnv(DirectRLEnv):
     def _prepare_reset_info(self):
         self._reset_info = self.terrain_cfg.birth
 
-        # 对数据进行格式统一化
+        # normalize data format
         for info in self._reset_info:
             if len(info["start_orient"]) == 3:
                 info["start_orient"] = euler_angles_to_quat(to_numpy(info["start_orient"]))
