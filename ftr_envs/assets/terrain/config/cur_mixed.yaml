@@ -41,5 +41,5 @@ map:
   cell_size: 0.05
 
 camera:
-  position: [0, 40, 25]
-  target: [0, 0, -5]
+  position: [-40, 40, 25]
+  target: [0, 5, -5]
