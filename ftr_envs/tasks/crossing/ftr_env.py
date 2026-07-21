@@ -31,7 +31,7 @@ from omni.isaac.lab.utils import configclass
 from ftr_envs.assets.articulation.ftr import FtrWheelArticulation
 from ftr_envs.assets.ftr import FTR_CFG, FTR_SIM_CFG
 from ftr_envs.assets.terrain.terrain import Terrain
-from ftr_envs.utils.torch import add_noise, rand_range
+from ftr_envs.utils.torch import add_noise, add_patch_noise, rand_range
 
 _log = logging.getLogger(__name__)
 
@@ -147,7 +147,8 @@ class FtrEnvCfg(DirectRLEnvCfg):
         }
     }
     noise = {
-        "hmap_noise_std": 0.1,
+        "hmap_noise_std": 0.03,
+        "hmap_patch_noise_std": 0.07,
         "flipper_drive_noise_std": 0.01,
         "baselink_drive_noise_std": 0.01,
         "flipper_pos_noise_std": 0.01,
@@ -199,6 +200,7 @@ class FtrEnv(DirectRLEnv):
         self._flipper_joint_ids, _ = self._robot.find_joints(self._robot.flipper_joint_names)
 
         self.hmap_noise_std = self.cfg.noise["hmap_noise_std"]
+        self.hmap_patch_noise_std = self.cfg.noise["hmap_patch_noise_std"]
         self.flipper_drive_noise_std = self.cfg.noise["flipper_drive_noise_std"]
         self.baselink_drive_noise_std = self.cfg.noise["baselink_drive_noise_std"]
         self.orientation_noise_std = self.cfg.noise["orientation_noise_std"]
@@ -586,7 +588,9 @@ class FtrEnv(DirectRLEnv):
         if self.cfg.flipper_style:
             # center-crop 65×65 → 64×64: drop last row and last col
             height_maps = height_maps[:, :64, :64]
-        return add_noise(height_maps, std=self.hmap_noise_std)
+        
+        height_maps = add_noise(height_maps, std=self.hmap_noise_std)
+        return add_patch_noise(height_maps, std=self.hmap_patch_noise_std)
 
     @cached_property
     def max_episode_length(self):
