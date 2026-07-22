@@ -16,7 +16,6 @@ from typing import Any, Sequence
 from collections import deque
 
 import carb
-import einops
 import numpy as np
 import omni.isaac.lab.sim as sim_utils
 import torch
@@ -31,7 +30,7 @@ from omni.isaac.lab.utils import configclass
 from ftr_envs.assets.articulation.ftr import FtrWheelArticulation
 from ftr_envs.assets.ftr import FTR_CFG, FTR_SIM_CFG
 from ftr_envs.assets.terrain.terrain import Terrain
-from ftr_envs.utils.torch import add_noise, add_patch_noise, rand_range
+from ftr_envs.utils.torch import add_noise, rand_range
 
 _log = logging.getLogger(__name__)
 
@@ -458,7 +457,7 @@ class FtrEnv(DirectRLEnv):
                     torch.zeros(n, num_joints, device=self.device),
                     env_ids=bad_ids,
                 )
-        if self.cfg.flipper_pos_max_deg is not None:
+        if self.cfg.flipper_pos_max_deg is not None or self.cfg.marv_flipper_front_up_deg is not None:
             flipper_offset = 4 if self.cfg.flipper_style else 2
             # flipper_style uses native convention (front+=down, rear+=up) which is
             # inverted relative to FTR's user convention → negate to align.
@@ -576,21 +575,6 @@ class FtrEnv(DirectRLEnv):
             # Flip row axis so row 0 = front (+x), row 44 = rear (−x).
             # Lateral stays: col 0 = left (−y), col 20 = right (+y).
             self.current_frame_height_maps[i, :, :] = local_map.flip(0)
-
-    def calc_scanned_height_maps(self, base_robot_frame=True):
-        h, w = self.height_map_size
-        shaped_map = torch.reshape(self.current_frame_height_maps, (-1, 1, h, w))
-        if base_robot_frame:
-            shaped_map = shaped_map - einops.repeat(
-                self.positions[:, 2] - self.track_wheel_radius, 'n -> n c rh rw', c=1, rh=h, rw=w
-            )
-        height_maps = shaped_map.squeeze(1)
-        if self.cfg.flipper_style:
-            # center-crop 65×65 → 64×64: drop last row and last col
-            height_maps = height_maps[:, :64, :64]
-        
-        height_maps = add_noise(height_maps, std=self.hmap_noise_std)
-        return add_patch_noise(height_maps, std=self.hmap_patch_noise_std)
 
     @cached_property
     def max_episode_length(self):

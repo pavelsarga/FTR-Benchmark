@@ -9,9 +9,7 @@
 
 """
 from typing import Sequence
-import logging
 
-import einops
 import numpy as np
 import torch
 import torch.nn as nn
@@ -19,11 +17,10 @@ import torch.nn as nn
 from omni.isaac.lab.envs import VecEnvObs
 from omni.isaac.lab.sim import PhysxCfg
 
-from ftr_envs.utils.torch import add_noise
+from rl_modules.rl_module import RLModule
+from rl_modules.registry import RLMODULE_REGISTRY
 
 from .ftr_env import FtrEnv, FtrEnvCfg, configclass
-
-_log = logging.getLogger(__name__)
 
 @torch.jit.script
 def point_in_rotated_ellipse(x, y, h, k, a, b, theta):
@@ -63,6 +60,9 @@ class CrossingEnvCfg(FtrEnvCfg):
     num_states = 0
     shaping_coef = 27.279373033235267
     shaping_gamma = 0.999
+
+    # Selects the RLModule implementation from RLMODULE_REGISTRY (see rl_modules/registry.py).
+    module_name: str = "marv_rl"
 
     # Shock penalty — penalises linear acceleration magnitude using a deadzone formulation.
     # shock_coef < 0 → penalty; None → disabled.
@@ -145,6 +145,10 @@ class CrossingEnvCfg(FtrEnvCfg):
     # Set to None to disable.
     shock_fail_limit: float | None = 20.0
 
+    # Rollover termination threshold (degrees). Episode fails when |roll| or |pitch|
+    # reaches this angle.
+    rollover_threshold_deg: float = 80.0
+
     # Raw per-robot acceleration logging (off by default).
     # When enabled, appends raw accel_mag values from healthy robots to a .npz file
     # every log_raw_accel_interval reward steps. Useful for offline histogram analysis.
@@ -161,7 +165,7 @@ class CrossingEnv(FtrEnv):
         self.pitch_t = np.deg2rad(30)
         if self.cfg.terrain_name in ("cur_stairs_up", ):
             self.pitch_t = np.deg2rad(45)
-        elif self.cfg.terrain_name in ("cur_mixed", ):
+        elif self.cfg.terrain_name in ("cur_mixed", "custom_mixed"):
             # Reconstruct PhysxCfg preserving all values set by the training config.
             # Cap GPU heap/temp to safe values: cur_mixed with 256 envs needs ~256 MB
             # heap; 1 GB is ample. Configs that request 2 GB heap + 1 GB temp can exhaust
@@ -193,47 +197,10 @@ class CrossingEnv(FtrEnv):
         self._timeout_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._raw_accel_buf: list = []
         self._raw_accel_steps: int = 0
+        self.rl_module: RLModule = RLMODULE_REGISTRY[self.cfg.module_name](self)
 
     def _get_observations(self) -> VecEnvObs:
-        height_map = self.calc_scanned_height_maps()
-        hmap_shape = height_map.shape
-        hmap_mean = einops.reduce(height_map, "n h w -> n", reduction="mean")
-        hmap_mean = einops.repeat(hmap_mean, "n -> n h w", h=hmap_shape[1], w=hmap_shape[2])
-        # hmap diagonal ≈ 2.483 m  sqrt((45×0.05)² + (21×0.05)²)
-        hmap_diag = float((self.height_map_length[0]**2 + self.height_map_length[1]**2)**0.5)
-        joint_limit = torch.deg2rad(torch.tensor(float(self.cfg.flipper_pos_max_deg))).item() if self.cfg.flipper_pos_max_deg is not None else None
-
-        # goal vector in robot body frame, normalised by hmap diagonal
-        goal_world = self.target_positions - self.positions          # [N,3] world frame
-        yaw = self.orientations_3[:, 2]
-        cos_y, sin_y = torch.cos(yaw), torch.sin(yaw)
-        goal_x = cos_y * goal_world[:, 0] + sin_y * goal_world[:, 1]
-        goal_y = -sin_y * goal_world[:, 0] + cos_y * goal_world[:, 1]
-        goal_body = torch.stack([goal_x, goal_y, goal_world[:, 2]], dim=-1) / hmap_diag  # [N,3]
-
-        obs = torch.cat([
-            (height_map - hmap_mean).view(self.num_envs, -1),                                               # 945  heightmap
-            add_noise(self.orientations_3[:, :2] / np.pi, self.orientation_noise_std),                      # 2    roll, pitch  (÷π)
-            add_noise(self.robot_lin_velocities, self.linear_vel_noise_std) / hmap_diag,                    # 3    lin vel      (÷diag)
-            add_noise(self.robot_ang_velocities, self.angular_vel_noise_std) / np.pi,                       # 3    ang vel      (÷π)
-            (add_noise(-self.flipper_positions if self.cfg.flipper_style else self.flipper_positions, self.flipper_pos_noise_std) + joint_limit) / (2*joint_limit) if joint_limit is not None else torch.zeros(self.num_envs, self.flipper_num, device=self.device),  # 4    joints [0,1] or 0 if locked
-            goal_body,                                                                                       # 3    goal vector  (÷diag)
-            self.last_action,                                                                                # 6    prev action  [v,w,fl×4]
-        ], dim=-1)
-        # total: 945 + 2 + 3 + 3 + 4 + 3 + 6 = 966
-
-        # Detect robots with NaN/Inf in obs — flag them for termination next step.
-        # (_get_observations runs after _get_dones, so termination is one step delayed.)
-        bad_obs = torch.isnan(obs).any(dim=-1) | torch.isinf(obs).any(dim=-1)
-        if bad_obs.any():
-            _log.warning("NaN/Inf in observations for %d envs: %s", bad_obs.sum().item(), bad_obs.nonzero(as_tuple=False).squeeze(-1).tolist())
-            self._obs_nan_mask |= bad_obs
-        # Sanitize: NaN/Inf from physics-exploded robots must not enter the replay buffer,
-        # as they corrupt gradients on the next optimisation step.
-        obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
-        return {
-            'policy': obs,
-        }
+        return self.rl_module.get_observations()
 
     def _calculate_metrics_shutdown(self, i):
         N = 5
@@ -257,183 +224,58 @@ class CrossingEnv(FtrEnv):
         healthy = ~terminal
 
         # ------------------------------------------------------------------
-        # Helper: mean over healthy robots, or 0.0 if none are healthy.
+        # Helper: mean / (mean, max, min) over healthy robots, or 0.0 if none are healthy.
         # ------------------------------------------------------------------
         def _hmean(t: torch.Tensor) -> float:
             return t[healthy].mean().item() if healthy.any() else 0.0
 
         def _hstats(t: torch.Tensor) -> tuple[float, float, float]:
-            """Return (mean, max, min) over healthy robots."""
             h = t[healthy]
             if not healthy.any():
                 return 0.0, 0.0, 0.0
             return h.mean().item(), h.max().item(), h.min().item()
 
         # ------------------------------------------------------------------
-        # 1. Compute each reward component once — reuse for reward AND logging.
+        # Universal per-step derived signals — shared across all RLModules, computed
+        # once here so modules read them (env.shock_norm/env.clearance/env.flipper_torques)
+        # instead of re-deriving them.
         # ------------------------------------------------------------------
-        reward_info: dict[str, float] = {}
-
-        # Potential-based shaping: coef * (gamma * phi(s') - phi(s)), phi = -dist
-        curr_dist = (self.target_positions[:, :2] - self.positions[:, :2]).norm(dim=-1)
-        prev_dist = (self.target_positions[:, :2] - self.prev_positions[:, :2]).norm(dim=-1)
-        r_shaping = cfg.shaping_coef * (prev_dist - cfg.shaping_gamma * curr_dist)
-        reward = r_shaping + cfg.step_penalty
-
-        reward_info["rew/shaping"] = _hmean(r_shaping)
-        reward_info["rew/step_penalty"] = cfg.step_penalty
-
-        # Joint-velocity variance penalty
-        if cfg.joint_vel_variance_coef is not None:
-            r_jvv = cfg.joint_vel_variance_coef * self.actions[:, 2:].abs().var(dim=-1)
-            reward -= r_jvv
-            reward_info["rew/joint_vel_var_penalty"] = -_hmean(r_jvv)
-
-        # Joints not horizontal penalty
-        if cfg.joint_ang_from_flat_coef is not None:
-            limit = torch.deg2rad(torch.tensor(float(cfg.flipper_pos_max_deg))).item()
-            flipper_pos = torch.abs(self._robot.data.joint_pos[:, self._flipper_joint_ids])  # (N, 4)
-            norm_dif = flipper_pos / limit  # [N, 4], in [0, 1]
-            penalty = cfg.joint_ang_from_flat_coef * norm_dif.mean(dim=-1)  # [N]
-            reward -= penalty
-            reward_info["rew/joint_ang_from_flat_penalty"] = -_hmean(penalty)
-
-        # Joint-angle variance penalty
-        if cfg.joint_angle_variance_coef is not None:
-            limit = torch.deg2rad(torch.tensor(float(cfg.flipper_pos_max_deg))).item()
-            diffs = ((self.flipper_positions[:, 0] - self.flipper_positions[:, 1]).abs() / limit
-                     + (self.flipper_positions[:, 2] - self.flipper_positions[:, 3]).abs() / limit) / 2
-            r_jav = cfg.joint_angle_variance_coef * diffs
-            reward -= r_jav
-            reward_info["rew/joint_angle_var_penalty"] = -_hmean(r_jav)
-
-        # Flipper-ground contact reward (torque-based)
-        flipper_torques = self._robot.data.applied_torque[:, self._flipper_joint_ids].abs()  # (N, 4)
-        if cfg.flipper_contact_coef is not None:
-            contact_signal = flipper_torques / cfg.flipper_contact_effort_limit  # normalize to [0, 1]
-            mean_signal = torch.clamp(contact_signal.mean(dim=-1)-0.5,min=0.0)
-            min_signal = contact_signal.min(dim=-1).values
-            alpha = 1
-            r_contact = cfg.flipper_contact_coef * (alpha*mean_signal + (1-alpha)*min_signal)
-            reward += r_contact
-            reward_info["rew/flipper_contact"] = _hmean(r_contact)
-
-        # Roll penalty
-        if cfg.roll_coef is not None:
-            roll_norm = 4 * (self.orientations_3[:, 0].abs() - np.deg2rad(15)) / torch.pi
-            r_roll = cfg.roll_coef * torch.clamp(roll_norm, max=1, min=0)
-            reward -= r_roll
-            reward_info["rew/roll_penalty"] = -_hmean(r_roll)
-
-        # Roll-rate penalty
-        if cfg.roll_rate_coef is not None:
-            r_roll_rate = cfg.roll_rate_coef * self.robot_ang_velocities[:, 0].abs() / np.pi
-            reward -= r_roll_rate
-            reward_info["rew/roll_rate_penalty"] = -_hmean(r_roll_rate)
-
-        # Pitch penalty
-        if cfg.pitch_coef is not None:
-            pitch_norm = 4 * (self.orientations_3[:, 1].abs() - np.deg2rad(7.5)) / torch.pi
-            r_pitch = cfg.pitch_coef * torch.clamp(pitch_norm, max=1, min=0)
-            reward -= r_pitch
-            reward_info["rew/pitch_penalty"] = -_hmean(r_pitch)
-
-        # Pitch-rate penalty
-        if cfg.pitch_rate_coef is not None:
-            r_pitch_rate = cfg.pitch_rate_coef * self.robot_ang_velocities[:, 1].abs() / np.pi
-            reward -= r_pitch_rate
-            reward_info["rew/pitch_rate_penalty"] = -_hmean(r_pitch_rate)
-
-        # Shock penalty
         dt = cfg.sim.dt * cfg.decimation
-        accel_mag = (self.robot_lin_velocities - self.prev_lin_velocities).norm(dim=-1) / dt
-        shock_norm = ((accel_mag - cfg.shock_threshold).clamp(min=0.0) / cfg.shock_scale).clamp(max=1.0)
-        if cfg.shock_coef is not None:
-            r_shock = cfg.shock_coef * shock_norm
-            reward -= r_shock
-            reward_info["rew/shock_penalty"] = -_hmean(r_shock)
-
-        # Clearance penalty (compute ground height unconditionally for state logging)
+        self.accel_mag = (self.robot_lin_velocities - self.prev_lin_velocities).norm(dim=-1) / dt
+        self.shock_norm = ((self.accel_mag - cfg.shock_threshold).clamp(min=0.0) / cfg.shock_scale).clamp(max=1.0)
         ground_height = self.current_frame_height_maps[
             :, self.height_map_size[0] // 2, self.height_map_size[1] // 2
         ]
-        clearance = self.positions[:, 2] - self.track_wheel_radius - ground_height
-        if cfg.clearance_coef is not None:
-            r_clearance = cfg.clearance_coef * (1 / (1 + torch.exp(-((clearance - 0.2) / 0.02))))
-            reward -= r_clearance
-            reward_info["rew/clearance"] = -_hmean(r_clearance)
-
-        # Action bonus
-        if cfg.action_bonus_coef is not None:
-            # v_norm = self.actions[:, 0
-            v_norm = (torch.Tensor(self.actions[:, 0]).pow(3)*cfg.lin_action_ratio + torch.Tensor(self.robot_lin_velocities[:, 0] / self.track_vel_max).pow(3)*(1-cfg.lin_action_ratio))  # body-frame forward velocity
-            
-            r_action = cfg.action_bonus_coef * (
-                torch.clamp(v_norm, max=1.0, min=-1.0)
-            )
-            reward += r_action
-            reward_info["rew/action_bonus"] = _hmean(r_action)
-
-        # Flipper actiopn bonus
-        if cfg.flipper_action_bonus_coef is not None:
-            flipper_norm = (self.actions[:, 2:]).abs().mean(dim=-1)
-            r_f_action = cfg.flipper_action_bonus_coef * (
-                torch.clamp(flipper_norm.pow(3), max=1.0)
-            )
-            reward += r_f_action
-            reward_info["rew/flipper_action_bonus"] = _hmean(r_f_action)
-
-        # Legacy flipper_training-style reward variants
-        if cfg.legacy_joint_vel_variance_coef is not None:
-            r = cfg.legacy_joint_vel_variance_coef * self.actions[:, 2:].abs().var(dim=-1)
-            reward -= r
-            reward_info["rew/legacy_joint_vel_var_penalty"] = -_hmean(r)
-
-        if cfg.legacy_joint_angle_variance_coef is not None:
-            r = cfg.legacy_joint_angle_variance_coef * self.flipper_positions.abs().var(dim=-1)
-            reward -= r
-            reward_info["rew/legacy_joint_angle_var_penalty"] = -_hmean(r)
-
-        if cfg.legacy_track_vel_variance_coef is not None:
-            r = cfg.legacy_track_vel_variance_coef * self.actions[:, :2].abs().var(dim=-1)
-            reward -= r
-            reward_info["rew/legacy_track_vel_var_penalty"] = -_hmean(r)
-
-        if cfg.legacy_roll_rate_coef is not None:
-            r = cfg.legacy_roll_rate_coef * self.robot_ang_velocities[:, 0].abs() / np.pi
-            reward -= r
-            reward_info["rew/legacy_roll_rate_penalty"] = -_hmean(r)
-
-        if cfg.legacy_pitch_rate_coef is not None:
-            r = cfg.legacy_pitch_rate_coef * self.robot_ang_velocities[:, 1].abs() / np.pi
-            reward -= r
-            reward_info["rew/legacy_pitch_rate_penalty"] = -_hmean(r)
+        self.clearance = self.positions[:, 2] - self.track_wheel_radius - ground_height
+        self.flipper_torques = self._robot.data.applied_torque[:, self._flipper_joint_ids].abs()  # (N, 4)
 
         # ------------------------------------------------------------------
-        # 2. Terminal masking & bonuses
+        # 1. Sum the module's individual reward components. Step penalty and terminal
+        # masking/bonuses are the module's own responsibility, so "step_penalty" and
+        # "terminal_bonus" already arrive as entries in `components`.
         # ------------------------------------------------------------------
-        reward[terminal] = 0.0
-        reward[self._success_mask] += cfg.goal_reached_reward
-        reward[self._fail_mask] += cfg.failed_reward
-        if cfg.timeout_penalty:
-            reward[self._timeout_mask] += cfg.timeout_penalty
+        components = self.rl_module.get_reward_components()
+        reward = torch.zeros(self.num_envs, device=self.device)
+        reward_info: dict[str, float] = {}
+        for name, comp in components.items():
+            reward = reward + comp
+            if name == "terminal_bonus":
+                # Mean over ALL robots — diluted by batch size since most robots are
+                # mid-episode. Use the separate rate/value logs below for interpretable
+                # monitoring.
+                reward_info[f"rew/{name}"] = comp.mean().item()
+            else:
+                reward_info[f"rew/{name}"] = _hmean(comp)
 
-        # terminal_bonus is the mean over ALL robots — diluted by batch size since most robots
-        # are mid-episode. Use the separate rate/value logs below for interpretable monitoring.
-        reward_info["rew/terminal_bonus"] = (
-            self._success_mask.float() * cfg.goal_reached_reward
-            + self._fail_mask.float() * cfg.failed_reward
-            + self._timeout_mask.float() * (cfg.timeout_penalty or 0.0)
-        ).mean().item()
         reward_info["rew/total_reward"] = reward.mean().item()
 
         # ------------------------------------------------------------------
-        # 3. State monitoring (always logged, regardless of penalty enable).
+        # 2. State monitoring (always logged, regardless of which components are enabled).
         # ------------------------------------------------------------------
 
         # ── Shock group ───────────────────────────────────────────────────
-        am_mean, am_max, am_min = _hstats(accel_mag)
-        sn_mean, sn_max, sn_min = _hstats(shock_norm)
+        am_mean, am_max, am_min = _hstats(self.accel_mag)
+        sn_mean, sn_max, sn_min = _hstats(self.shock_norm)
         reward_info["shock/accel_magnitude"] = am_mean
         reward_info["shock/accel_magnitude_max"] = am_max
         reward_info["shock/accel_magnitude_min"] = am_min
@@ -442,7 +284,7 @@ class CrossingEnv(FtrEnv):
         reward_info["shock/shock_normalised_min"] = sn_min
 
         if cfg.log_raw_accel and cfg.log_raw_accel_path is not None and healthy.any():
-            self._raw_accel_buf.append(accel_mag[healthy].cpu().numpy())
+            self._raw_accel_buf.append(self.accel_mag[healthy].cpu().numpy())
             self._raw_accel_steps += 1
             if cfg.log_raw_accel_interval > 0 and self._raw_accel_steps % cfg.log_raw_accel_interval == 0:
                 self._flush_raw_accel()
@@ -451,7 +293,7 @@ class CrossingEnv(FtrEnv):
         # Per-flipper torque and normalized contact signal
         flipper_names = ["FL", "FR", "RL", "RR"]
         if healthy.any():
-            ft_h = flipper_torques[healthy]  # (H, 4)
+            ft_h = self.flipper_torques[healthy]  # (H, 4)
             ft_mean = ft_h.mean(dim=0)
             ft_max = ft_h.max(dim=0).values
             ft_min = ft_h.min(dim=0).values
@@ -469,8 +311,7 @@ class CrossingEnv(FtrEnv):
                     reward_info[f"torque/flipper_contact_{name}_max"] = cs_max[i].item()
 
         # ── Clearance group ────────────────────────────────────────────────
-        # (clearance already computed above in the reward section)
-        cl_mean, cl_max, cl_min = _hstats(clearance)
+        cl_mean, cl_max, cl_min = _hstats(self.clearance)
         reward_info["clearance/height"] = cl_mean
         reward_info["clearance/height_max"] = cl_max
         reward_info["clearance/height_min"] = cl_min
@@ -502,8 +343,7 @@ class CrossingEnv(FtrEnv):
 
         # Linear velocity at success termination
         if self._success_mask.any():
-            success_lin_vel = lin_vel_mag[self._success_mask].mean().item()
-            reward_info["state/success_lin_velocity"] = success_lin_vel
+            reward_info["state/success_lin_velocity"] = lin_vel_mag[self._success_mask].mean().item()
         else:
             reward_info["state/success_lin_velocity"] = 0.0
 
@@ -515,6 +355,9 @@ class CrossingEnv(FtrEnv):
 
         self.reward_buf[:] = reward
         return self.reward_buf
+    
+    def calc_scanned_height_maps(self, base_robot_frame=True):
+        return self.rl_module.calc_scanned_height_maps(base_robot_frame)
 
     def _flush_raw_accel(self) -> None:
         if not self._raw_accel_buf or self.cfg.log_raw_accel_path is None:
@@ -556,7 +399,9 @@ class CrossingEnv(FtrEnv):
         # Target reached
         target_idx = (self.positions[:, :2] - self.target_positions[:, :2]).norm(dim=-1) <= 0.4
         # Rollover
-        rollover_idx = torch.any(torch.abs(torch.rad2deg(self.orientations_3[:, :2])) >= 80, dim=-1)
+        rollover_idx = torch.any(
+            torch.abs(torch.rad2deg(self.orientations_3[:, :2])) >= self.cfg.rollover_threshold_deg, dim=-1
+        )
         # Out of range
         out_range_idx = out_of_range(
             self.positions, self.start_positions, self.target_positions,

@@ -1,0 +1,8 @@
+# PanD3QNModule-specific parameters that don't belong in the standard training config (configs/).
+orientation_history_k: 5
+pitch_delta_threshold: 1.047197551 # pi/3
+mean_pitch_delta_threshold: 1.909859317 # 1/(pi/6)
+flipper_angle_threshold: 1.909859317 # 1/(pi/6)
+
+robot_wheel_base_length: 0.5
+robot_wheel_diam: 0.24
