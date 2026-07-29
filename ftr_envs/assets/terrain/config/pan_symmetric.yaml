@@ -1,0 +1,34 @@
+prim_config:
+  set_attrs:
+  - prim_path: terrain
+    attr_name: xformOp:translate
+    value:
+    - 0.0
+    - 0.0
+    - 0.0
+  - prim_path: terrain
+    attr_name: xformOp:orient
+    value:
+    - 0
+    - 0
+    - 0
+    - 1.0
+map:
+  lower:
+  - -46.0
+  - -13.666666666665499
+  - -1.0
+  upper:
+  - 46.0
+  - 13.666666666665499
+  - 3.0
+  cell_size: 0.05
+camera:
+  position:
+  - -40
+  - 40
+  - 25
+  target:
+  - 0
+  - 5
+  - -5

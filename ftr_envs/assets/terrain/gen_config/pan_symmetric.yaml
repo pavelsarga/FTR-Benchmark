@@ -1,0 +1,80 @@
+# Worked example: a course of graded tiles, easiest (first repeat) ->
+# hardest (last repeat). `repeats` is course-wide — every row gets the same
+# number of tiles.
+#
+# Every obstacle's geometry constants (margins/widths/depths) have defaults
+# baked into its own file, all overridable per-row via `extra:` — shown
+# below for each of the six current types.
+#
+# Run:
+#   python generate_terrain.py terrain_config_example.yaml \
+#       --output-dir /path/to/src/FTR-Benchmark/ftr_envs/assets/terrain --overwrite
+#
+# (or --dry-run first, to sanity-check layout/heights without needing pxr/usd-core)
+
+name: pan_symmetric
+seed: 42
+cell_size: 0.05
+repeats: 10
+
+tile:
+  width: 8.8            # travel/X direction
+  depth: 3.333333333333  # lane/Y direction
+
+border_width: 2.0
+base_z: 0.5
+
+camera:
+  position: [-40, 40, 25]
+  target: [0, 5, -5]
+
+rows:
+  # raised_platform defaults: 1.5m spawn + 2m platform + 1.5m goal.
+  # Here widened to a 3m platform with tighter 1m margins on each side
+  # (1 + 3 + 1 = the default 5m tile.width).
+  - type: raised_platform
+    min_height: 0.05
+    max_height: 0.30
+    extra: {platform_width: 3.0}
+
+  # double_trench defaults: 1m spawn + 1m trench + 1m level ground + 1m
+  # trench + 1m goal. Here narrowed to 0.5m-wide trenches with a wider 2m
+  # level ground section between them (1 + 0.5 + 2 + 0.5 + 1 = 5m).
+  - type: double_trench
+    min_height: 0.05
+    max_height: 0.30
+    extra: {trench_width: 1.0, middle_width: 1.0}
+
+  # widening_trench defaults: 1.5m spawn + trench (width graded 0.3m ->
+  # 1.5m, depth fixed 0.3m) + goal. Here starting closer to the tile edge
+  # and cut twice as deep.
+  - type: widening_trench
+    extra: {trench_depth: 0.3, min_width: 0.9, max_width: 1.5}
+
+  # twin_rails defaults: 1m spawn + 0.2m rail + 1m gap + 0.2m rail + goal,
+  # enclosed on both sides by 0.1m guard walls 0.15m above the rails. Here
+  # thicker rails with a wider gap and taller walls.
+  - type: twin_rails
+    min_height: 0.05
+    max_height: 0.20
+    extra: {rail_width: 0.3, gap_width: 1.5, wall_height: 0.25}
+
+  # raised_stairs defaults: 0.5m spawn + 5 steps up (0.3m tread each) + 1m
+  # platform + 5 steps down (mirrored) + 0.5m goal. Tread depth is FIXED —
+  # only the rise per step (and platform height) grades with difficulty.
+  # Here fewer, deeper treads.
+  - type: raised_stairs
+    min_height: 0.15
+    max_height: 0.40
+    extra: {n_steps: 4, step_length: 0.2}
+
+  # lowered_stairs defaults: same layout as raised_stairs but recessed (down
+  # into a pit instead of up onto a platform), enclosed by 0.1m side beams
+  # on every recessed segment (see MIN_EDGE_MARGIN).
+  - type: lowered_stairs
+    min_height: 0.15
+    max_height: 0.40
+    extra: {n_steps: 4, step_length: 0.2}
+
+  # flat_patch: no obstacle, just the bare tile — a rest/baseline lane.
+  - type: flat_patch

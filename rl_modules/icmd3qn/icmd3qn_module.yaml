@@ -1,0 +1,29 @@
+# ICMD3QNModule-specific parameters (Pan et al. 2023, ICM-D3QN) that don't belong in the
+# standard training config (configs/).
+orientation_history_k: 100
+
+# R_pitch (Eq. 6): lambda_2, used as both the smoothness penalty's slope and its
+# violation threshold (1/lambda_2), matching the paper's single-coefficient formulation.
+lambda_pitch: 0.33   # Table 2
+
+# R_flipper (Eq. 4): lambda_1, same dual role (slope + 1/lambda_1 threshold). Front
+# flipper only, matching the paper — Eq. 4 does not define this term for the rear flipper.
+lambda_flipper: 0.1   # Table 2
+
+robot_wheel_base_length: 0.5
+robot_wheel_diam: 0.24
+
+# Height-map bin ordering assumption used by the R_flipper candidate-angle geometry.
+# Flip to false if empirical testing shows front/rear reward shaping is reversed.
+hmap_x_increasing: true
+
+# R_contact (Eq. 7-8) approximation: the paper classifies discrete contact points against
+# terrain point-set partitions (T_r/T_br/T_bf/T_f), unavailable in this simulator. We
+# instead penalise the chassis lifting off the ground via FtrEnv's existing center
+# ground-clearance signal as a proxy for "tracks not contacting terrain".
+contact_clearance_threshold: 0.03   # meters
+
+# Eq. 10 weights: R^e_t = R_end + kappa_flipper*R_flipper + kappa_pitch*R_pitch + kappa_contact*R_contact
+kappa_flipper: 0.005
+kappa_pitch: 0.005
+kappa_contact: 0.005

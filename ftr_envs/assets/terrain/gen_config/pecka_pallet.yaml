@@ -1,0 +1,44 @@
+# Single-pallet terrain for rl_modules/creps (Pecka, Salansky, Zimmermann & Svoboda 2016,
+# "Autonomous Flipper Control with Safety Constraints", Constrained REPS / CREPS).
+#
+# Uses raised_platform: a flat spawn zone -> raised platform (the "pallet") -> flat goal
+# zone, matching the paper's Fig. 3 task exactly (climb up onto a low pallet-like
+# obstacle, cross it, descend back to ground level -- start and target are BOTH at
+# ground level since raised_platform doesn't override birth_offsets(), unlike the
+# staircase obstacles used by other modules). Fixed height (min_height == max_height, no
+# difficulty grading) and repeats: 1 (every rollout sees the identical physical obstacle)
+# -- matching the paper's single fixed pallet and CREPS's context-free design (context is
+# unused in the paper's own reported experiment, so there's no need for varied instances).
+#
+# Sizing: marv_config_creps.yaml's fixed_forward_vel=0.3 m/s over the env's fixed 30s
+# episode covers ~9.0m. The platform (platform_width=2.0) is centered in the tile, so
+# tile.width=10.8 gives a 4.4m flat margin on each side — comfortably covering the
+# ~9.0m round trip plus slack for the out-of-range ellipse.
+#
+# Run (from src/FTR-Bench-terrain-gen/):
+#   python generate_terrain.py terrain_config_pecka_pallet.yaml \
+#       --output-dir ../FTR-Benchmark/ftr_envs/assets/terrain --dry-run
+#   python generate_terrain.py terrain_config_pecka_pallet.yaml \
+#       --output-dir ../FTR-Benchmark/ftr_envs/assets/terrain --overwrite
+
+name: pecka_pallet
+seed: 42
+cell_size: 0.05
+repeats: 1
+
+tile:
+  width: 10.8
+  depth: 5.0
+
+border_width: 2.0
+base_z: 0.5
+
+camera:
+  position: [-8, 8, 6]
+  target: [0, 1, -1]
+
+rows:
+  - type: raised_platform
+    min_height: 0.15
+    max_height: 0.15
+    extra: {platform_width: 2.0}

@@ -1,0 +1,8 @@
+# ATD3QNModule-specific parameters that don't belong in the standard training config (configs/).
+orientation_history_k: 100
+pitch_delta_threshold: 1.047197551 # pi/3
+mean_pitch_delta_threshold: 0.33
+flipper_angle_threshold: 0.1
+
+robot_wheel_base_length: 0.5
+robot_wheel_diam: 0.24

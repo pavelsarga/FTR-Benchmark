@@ -1,0 +1,78 @@
+# Staircase terrain for rl_modules/mitriakov (Mitriakov et al. 2021, "Reinforcement
+# Learning Based, Staircase Negotiation Learning"). Two parallel lanes (rows), one per
+# Table 3 staircase size:
+#   row 0 ("Big"):   5 steps, 0.195m rise each (0.975m total), 0.275m tread.
+#   row 1 ("Small"): 3 steps, 0.17m rise each (0.51m total), 0.305m tread.
+# CourseGrid places rows at different Y offsets (grid.py's iter_tiles: y_center =
+# (row_index - (n_rows-1)/2) * tile.depth), so with n_rows=2 row 0 sits at negative Y and
+# row 1 at positive Y — mitriakov_module.py's _row_mask() keys off that sign to pick the
+# matching edge-geometry table per env.
+#
+# extra.birth_platform_height on each row cross-wires ONLY the platform-side birth Z to
+# the OTHER row's height (row 0's mesh is genuinely 0.975m tall but its platform-side
+# birth point is computed as if height=0.51, and vice versa for row 1) — an empirical fix
+# for observed in-sim spawn behavior, NOT a statement that the geometry itself is wrong.
+# Does not affect build_usd/build_heightmap (the actual mesh), only birth.json.
+#
+# Uses stairs_ascent_descent (NOT raised_stairs/lowered_stairs — those span the tile
+# symmetrically as a round trip, climb-then-back-down, since birth.py places start/target
+# at the tile's own trailing/leading margins regardless of obstacle type; an earlier
+# version of this file used them and needed 10 precomputed step edges to account for
+# that). stairs_ascent_descent is a genuinely ONE-WAY staircase: ascending tiles
+# (diff.col_index even) spawn at ground level and the goal is on the platform top;
+# descending tiles (odd col_index) are the mirror image. repeats: 10 below alternates
+# both across each row's columns, so both rows mix ascending and descending tiles.
+#
+# Fixed geometry per row (min_height == max_height, no difficulty grading):
+# mitriakov_module.yaml's big_*/small_* step_edge_offsets_m/heights_m are precomputed
+# analytically for THESE EXACT geometries (see that file's comments for the derivation)
+# and would be wrong for any other height/step_length/n_steps/entry_margin/tile.width/
+# birth_clearance combination — regenerate that table (see its own comments for the
+# recomputation method) before changing any of them.
+#
+# entry_margin=2.2 and tile.width=6.3 give birth_clearance(1.0, MARV's spec'd 1m from
+# any edge) at least 1.15m of flat clearance to the nearest riser on both the
+# entry_margin side AND the platform side (MARV is 1.1m long: half-length 0.55m + 0.6m
+# buffer) — same clearance as the previous entry_margin=1.8/tile.width=5.5/
+# birth_clearance=0.6 geometry, just with the spawn point itself moved out to the full
+# 1m spec.
+#
+# Run (from src/FTR-Bench-terrain-gen/):
+#   python generate_terrain.py terrain_config_mitriakov_stairs.yaml \
+#       --output-dir ../FTR-Benchmark/ftr_envs/assets/terrain --dry-run
+#   python generate_terrain.py terrain_config_mitriakov_stairs.yaml \
+#       --output-dir ../FTR-Benchmark/ftr_envs/assets/terrain --overwrite
+
+name: mitriakov_stairs
+seed: 42
+cell_size: 0.05
+repeats: 10
+
+tile:
+  width: 6.3    # shared by both rows; row 0's platform_length auto-fills to 2.725
+                # (6.3 - entry_margin 2.2 - 5*0.275), row 1's to 3.185 (6.3 - 2.2 - 3*0.305)
+  depth: 3.0
+
+border_width: 2.0
+base_z: 0.5
+
+# 1m-tall thin wall at every internal tile boundary within each row, so a robot can't
+# drive/slide from one staircase instance straight into the next — otherwise flush at
+# ground level (between a descending tile's goal and the next ascending tile's spawn)
+# or at platform level (between an ascending tile's goal and the next descending tile's
+# spawn), with nothing physically separating them.
+tile_dividers: {height: 1.0, width: 0.1}
+
+camera:
+  position: [-8, 8, 6]
+  target: [0, 1, -1]
+
+rows:
+  - type: stairs_ascent_descent   # row 0: "Big" (Table 3)
+    min_height: 0.975
+    max_height: 0.975
+    extra: {entry_margin: 2.2, n_steps: 5, step_length: 0.275, birth_platform_height: 0.51}
+  - type: stairs_ascent_descent   # row 1: "Small" (Table 3)
+    min_height: 0.51
+    max_height: 0.51
+    extra: {entry_margin: 2.2, n_steps: 3, step_length: 0.305, birth_platform_height: 0.975}

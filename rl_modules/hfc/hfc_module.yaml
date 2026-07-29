@@ -1,0 +1,12 @@
+# HFCModule-specific parameters (Azayev & Zimmermann 2022, HFC) that don't belong in the
+# standard training config (configs/). The paper defines no RL reward at all (its state
+# classifier is trained via imitation learning, Eq. 2) — pitch_delta_threshold/
+# mean_pitch_delta_threshold reuse ATD3QNModule's exact smoothness-penalty formula, and
+# kappa_movement is this project's own stand-in for the paper's "fewer state changes"
+# smoothness criterion (Section VI.A) — see hfc_module.py's get_reward_components().
+orientation_history_k: 100
+pitch_delta_threshold: 1.047197551 # pi/3
+mean_pitch_delta_threshold: 1.909859317 # 1/(pi/6)
+
+kappa_pitch: 1.0
+kappa_movement: 1.0

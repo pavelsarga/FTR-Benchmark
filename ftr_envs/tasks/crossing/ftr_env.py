@@ -118,12 +118,54 @@ class FtrEnvCfg(DirectRLEnvCfg):
     # cylinders contact terrain. No effect on robot_type "ftr".
     disable_flipper_arm_collision: bool = True
 
+    # Settable via env_cfg_overrides in YAML; default matches robot_config below. 2-DOF
+    # front/rear flipper pairs (9-action discrete space) instead of 4 independent flippers.
+    sync_flipper_control: bool = False
+
+    # How the policy's flipper action (per-flipper value in [-1, 1]) is interpreted:
+    #   "velocity" (default) — the action is a flipper angular velocity command,
+    #       integrated onto the current angle every step (scaled by flipper_dt deg/step)
+    #       and clamped to the flipper angle limits. This is the historical behaviour.
+    #   "increment" — the action selects a fixed-size angle step per control step in the
+    #       commanded direction (sign of the action), added to the current angle and
+    #       clamped to the limits. The step magnitude is flipper_angle_increment_deg.
+    #       Matches AT-D3QN's discrete ±π/12 CW/hold/CCW design (Pan et al. 2023).
+    #   "position" — the action is an absolute target, linearly mapped onto the flipper
+    #       angle limits (action -1 → lower/up bound, +1 → upper/down bound). No
+    #       integration/decimation; the commanded angle is applied directly. Works with
+    #       both the symmetric ±flipper_pos_max_deg limits and the asymmetric per-pair
+    #       MARV limits (marv_flipper_*_deg).
+    flipper_control_mode: str = "velocity"
+
+    # Per-step flipper angle step (degrees) used only when flipper_control_mode == "increment".
+    # Default 15.0° = π/12, the increment AT-D3QN (Pan et al. 2023) was designed around.
+    flipper_angle_increment_deg: float = 15.0
+
     # Friction — settable via env_cfg_overrides in YAML; defaults match robot_config below
     # so old configs that don't set these fields continue to work unchanged.
     flipper_material_friction: float = 5.0    # rigid flipper arm (steel chassis)
     wheel_material_friction: float = 10.0    # rubber tracks; effective = wheel × terrain_dynamic
     terrain_static_friction: float = 0.9      # global scene physics_material default
     terrain_dynamic_friction: float = 0.7     # global scene physics_material default
+
+    # Settable via env_cfg_overrides in YAML; defaults match robot_config/robot_render_config/
+    # noise below. These previously had no top-level field/bridge (same class of bug
+    # sync_flipper_control had) — a config setting them via env_cfg_overrides would have
+    # silently done nothing, since env_cfg_overrides only setattr's top-level attributes.
+    chassis_wheel_render_mass: float = 2.98
+    flipper_wheel_render_mass: float = 1.0
+    only_render_front_flipper: bool = False
+    drive_wheel_radius: float = 0.1165
+    auxiliary_wheel_radius: float = 0.0780
+    render_radius: float = 0.1165
+    hmap_noise_std: float = 0.03
+    hmap_patch_noise_std: float = 0.07
+    flipper_drive_noise_std: float = 0.01
+    baselink_drive_noise_std: float = 0.01
+    flipper_pos_noise_std: float = 0.01
+    angular_vel_noise_std: float = 0.2
+    linear_vel_noise_std: float = 0.1
+    orientation_noise_std: float = 0.01
 
     robot_config = {
         "sync_flipper_control": False,
@@ -165,14 +207,38 @@ class FtrEnv(DirectRLEnv):
         # Apply top-level friction fields into the nested robot_config dict and physics_material
         # so that env_cfg_overrides in YAML can control friction without touching robot_config.
         self.cfg.robot_config = dict(self.cfg.robot_config)  # instance copy — don't mutate class default
+        self.cfg.robot_config["sync_flipper_control"] = self.cfg.sync_flipper_control
         self.cfg.robot_config["flipper_material_friction"] = self.cfg.flipper_material_friction
         self.cfg.robot_config["wheel_material_friction"] = self.cfg.wheel_material_friction
         self.cfg.robot_config["flipper_pos_max"] = self.cfg.flipper_pos_max_deg
         self.cfg.robot_config["legacy_ftr_turning"] = self.cfg.legacy_ftr_turning
         self.cfg.robot_config["wheel1_collision_radius_scale"] = self.cfg.wheel1_collision_radius_scale
         self.cfg.robot_config["disable_flipper_arm_collision"] = self.cfg.disable_flipper_arm_collision
+        self.cfg.robot_config["chassis_wheel_render_mass"] = self.cfg.chassis_wheel_render_mass
+        self.cfg.robot_config["flipper_wheel_render_mass"] = self.cfg.flipper_wheel_render_mass
         self.cfg.sim.physics_material.static_friction = self.cfg.terrain_static_friction
         self.cfg.sim.physics_material.dynamic_friction = self.cfg.terrain_dynamic_friction
+
+        # Instance copies (including nested sub-dicts) — don't mutate the class defaults.
+        self.cfg.robot_render_config = {
+            "flipper": dict(self.cfg.robot_render_config["flipper"]),
+            "track": dict(self.cfg.robot_render_config["track"]),
+        }
+        self.cfg.robot_render_config["flipper"]["only_render_front_flipper"] = self.cfg.only_render_front_flipper
+        self.cfg.robot_render_config["flipper"]["drive_wheel_radius"] = self.cfg.drive_wheel_radius
+        self.cfg.robot_render_config["flipper"]["auxiliary_wheel_radius"] = self.cfg.auxiliary_wheel_radius
+        self.cfg.robot_render_config["track"]["render_radius"] = self.cfg.render_radius
+
+        self.cfg.noise = dict(self.cfg.noise)
+        self.cfg.noise["hmap_noise_std"] = self.cfg.hmap_noise_std
+        self.cfg.noise["hmap_patch_noise_std"] = self.cfg.hmap_patch_noise_std
+        self.cfg.noise["flipper_drive_noise_std"] = self.cfg.flipper_drive_noise_std
+        self.cfg.noise["baselink_drive_noise_std"] = self.cfg.baselink_drive_noise_std
+        self.cfg.noise["flipper_pos_noise_std"] = self.cfg.flipper_pos_noise_std
+        self.cfg.noise["angular_vel_noise_std"] = self.cfg.angular_vel_noise_std
+        self.cfg.noise["linear_vel_noise_std"] = self.cfg.linear_vel_noise_std
+        self.cfg.noise["orientation_noise_std"] = self.cfg.orientation_noise_std
+
         self.terrain_cfg = Terrain(cfg.terrain_name)
 
         self.sync_flipper_control = self.cfg.robot_config["sync_flipper_control"]
@@ -459,11 +525,11 @@ class FtrEnv(DirectRLEnv):
                 )
         if self.cfg.flipper_pos_max_deg is not None or self.cfg.marv_flipper_front_up_deg is not None:
             flipper_offset = 4 if self.cfg.flipper_style else 2
-            # flipper_style uses native convention (front+=down, rear+=up) which is
-            # inverted relative to FTR's user convention → negate to align.
-            flipper_sign = -1 if self.cfg.flipper_style else 1
-            flipper_delta = flipper_sign * self.actions[:, flipper_offset:] * self.flipper_dt
-            next_pos = torch.deg2rad(flipper_delta) + self.flipper_positions
+            flipper_cmd = self.actions[:, flipper_offset:]
+
+            # Per-flipper angle limits (radians), in flipper_target_pos convention. The same
+            # bounds are used to clamp the integrated angle (velocity mode) and to define the
+            # [-1, 1] → [low, high] target map (position mode).
             marv_limits = (
                 self.cfg.marv_flipper_front_up_deg,
                 self.cfg.marv_flipper_front_down_deg,
@@ -471,16 +537,52 @@ class FtrEnv(DirectRLEnv):
                 self.cfg.marv_flipper_back_down_deg,
             )
             if self.cfg.robot_type == "marv" and all(v is not None for v in marv_limits):
-                # Asymmetric per-pair limits for MARV.
-                # Front [0:2]: up = negative angle, down = positive angle
-                # Rear  [2:4]: up = positive angle, down = negative angle
+                # Asymmetric per-pair limits for MARV: up = negative angle, down = positive
+                # angle for front; up = positive angle, down = negative angle for rear.
+                # The target's width/ordering depends on sync_flipper_control/only_front_flipper
+                # (see get_flipper_pos()) — mirror that same branching here so low/high always
+                # match the target's actual per-flipper layout.
                 front_up, front_down, back_up, back_down = (np.deg2rad(v) for v in marv_limits)
-                low  = torch.tensor([-front_up,   -front_up,   -back_down, -back_down], device=self.device, dtype=next_pos.dtype)
-                high = torch.tensor([ front_down,  front_down,  back_up,    back_up],   device=self.device, dtype=next_pos.dtype)
-                self.flipper_target_pos = torch.clamp(next_pos, low, high)
+                if self.sync_flipper_control and self.only_front_flipper:
+                    low_vals, high_vals = [-front_up], [front_down]
+                elif self.sync_flipper_control and not self.only_front_flipper:
+                    low_vals, high_vals = [-front_up, -back_down], [front_down, back_up]
+                elif not self.sync_flipper_control and self.only_front_flipper:
+                    low_vals, high_vals = [-front_up, -front_up], [front_down, front_down]
+                else:
+                    low_vals  = [-front_up,  -front_up,  -back_down, -back_down]
+                    high_vals = [ front_down,  front_down,  back_up,    back_up]
+                low  = torch.tensor(low_vals,  device=self.device, dtype=self.flipper_target_pos.dtype)
+                high = torch.tensor(high_vals, device=self.device, dtype=self.flipper_target_pos.dtype)
             else:
+                # Symmetric limits: ±flipper_pos_max_deg for every flipper.
                 limit = np.deg2rad(self.cfg.flipper_pos_max_deg)
-                self.flipper_target_pos = torch.clip(next_pos, -limit, limit)
+                low  = torch.full((self.flipper_num,), -limit, device=self.device, dtype=self.flipper_target_pos.dtype)
+                high = torch.full((self.flipper_num,),  limit, device=self.device, dtype=self.flipper_target_pos.dtype)
+
+            if self.cfg.flipper_control_mode == "position":
+                # Positional control: the policy outputs an absolute flipper target in
+                # [-1, 1], linearly mapped onto [low, high] (action -1 → low, +1 → high).
+                # No integration/decimation — the commanded angle is applied directly.
+                unit = (flipper_cmd.clamp(-1.0, 1.0) + 1.0) * 0.5
+                self.flipper_target_pos = low + unit * (high - low)
+            else:
+                # Velocity and increment control both integrate a per-step delta onto the
+                # current flipper angle, then clamp to [low, high]. flipper_style uses native
+                # convention (front+=down, rear+=up), inverted vs FTR's user convention → negate.
+                flipper_sign = -1 if self.cfg.flipper_style else 1
+                if self.cfg.flipper_control_mode == "increment":
+                    # Fixed-size angle step per control step in the commanded direction
+                    # (sign of the action, so magnitude is ignored — a discrete CW/hold/CCW
+                    # command). Matches AT-D3QN's ±π/12 flipper increments.
+                    delta = flipper_sign * torch.sign(flipper_cmd) * np.deg2rad(self.cfg.flipper_angle_increment_deg)
+                    next_pos = delta + self.flipper_positions
+                else:
+                    # Velocity control (default): the action is an angular velocity command,
+                    # scaled by flipper_dt (deg/step).
+                    flipper_delta = flipper_sign * flipper_cmd * self.flipper_dt
+                    next_pos = torch.deg2rad(flipper_delta) + self.flipper_positions
+                self.flipper_target_pos = torch.clamp(next_pos, low, high)
         else:
             self.flipper_target_pos.zero_()
 

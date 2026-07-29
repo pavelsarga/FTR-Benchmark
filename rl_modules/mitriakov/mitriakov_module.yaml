@@ -1,0 +1,74 @@
+# MitriakovModule-specific parameters (Mitriakov et al. 2021, RL-based staircase
+# negotiation) that don't belong in the standard training config (configs/).
+
+# Which of Eq. 5/6's penalties applies (cog_penalty for ascending, pitch_velocity_penalty
+# for descending) is selected PER ENV by MitriakovModule._ascending_mask() (target_z vs
+# start_z), not a fixed config choice here — the terrain mixes both tile types across
+# envs (see the geometry section below). The paper's asymmetric flipper limits (rear in
+# [-pi/4,0] for ascent, front in [-pi/4,0] for descent) are also selected per env, using
+# this same signal: env_cfg_overrides.marv_flipper_*_deg (training config) sets a single,
+# looser outer envelope, while policy_opts.mitriakov_limit_front_deg/
+# mitriakov_limit_rear_deg (mitriakov_policy.py's MitriakovFlipperBounds) applies the
+# tighter per-direction sub-range within it.
+
+K_D: 0.5   # COG-deviation penalty coefficient (Eq. 5) — not numerically specified in the paper
+K_W: 0.5   # pitch-velocity penalty coefficient (Eq. 6) — not numerically specified in the paper
+
+# Front-to-rear flipper pivot separation (m) used for the COG-deviation proxy — same
+# convention/value as atd3qn/icmd3qn's robot_wheel_base_length.
+robot_wheel_base_length: 0.5
+
+# ---- Staircase geometry (analytic step-edge positions) ----
+# Matches terrain "mitriakov_stairs" (src/FTR-Bench-terrain-gen/terrain_config_mitriakov_stairs.yaml),
+# which has TWO parallel rows/lanes, one per Table 3 staircase size:
+#   row 0 ("big"):   entry_margin=2.2, n_steps=5, step_length=0.275, height=0.975
+#   row 1 ("small"): entry_margin=2.2, n_steps=3, step_length=0.305, height=0.51
+# (both share tile.width=6.3, so platform_length auto-fills differently per row: 2.725 for
+# big, 3.185 for small). Each row's `extra.birth_platform_height` cross-wires ONLY its
+# platform-side birth Z to the OTHER row's height (row 0's mesh is genuinely 0.975m tall
+# but its platform-side birth point uses 0.51, and vice versa) — an empirical fix for
+# observed in-sim spawn behavior; the mesh/geometry (and therefore the step-edge tables
+# below) are unaffected. entry_margin/tile.width/birth_clearance have all grown by the
+# same +0.4m/+0.8m/+0.4m deltas together (from an earlier entry_margin=1.8/
+# tile.width=5.5/birth_clearance=0.6) to move the spawn point out to birth.py's spec'd
+# 1.0m from the tile edge WITHOUT changing the flat clearance to the first riser (still
+# >=1.15m: MARV is 1.1m long and needs 0.6m beyond its own half-length) — since the
+# step-edge offsets below are measured relative to start_positions, not the tile edge,
+# matched deltas leave them completely unchanged (verify by rerunning the recomputation
+# below if you ever change these by DIFFERENT amounts). This module has no way to derive
+# these at runtime (the .map heightmap
+# carries no edge metadata) so they're precomputed here from the same analytic formula
+# the generator uses (ftr_terrain_gen/obstacles/stairs_ascent_descent.py's _profile /
+# ftr_terrain_gen/shapes.py's x_segment_centers), independently verified against that
+# code's actual output for both rows (not just derived symbolically).
+#
+# repeats: 10 in the terrain config means HALF the tiles in EACH row are ascending (even
+# col_index: ground-level spawn, goal on the platform) and half are descending (odd
+# col_index: platform spawn, ground-level goal) — stairs_ascent_descent alternates by
+# repeat, see that file's docstring. CourseGrid places row 0 (big) at Y=-1.5 and row 1
+# (small) at Y=+1.5 (grid.py's iter_tiles, tile.depth=3.0) — mitriakov_module.py's
+# _row_mask() keys off that sign, _ascending_mask() off target_z vs start_z, to select
+# the matching table below per env (4 combinations total: big/small x ascent/descent).
+#
+# Both rows' start/target sit at the same +/-2.15 m tile-relative offset (birth.py's
+# birth_clearance=1.0 default: half_w - 1.0 = 3.15-1.0=2.15; not used directly below —
+# offsets are relative to start_positions, not the tile center), but the step geometry
+# itself is NOT a simple sign-flip between ascent/descent within a row — entry_margin !=
+# platform_length for either row, so the two directions' riser offsets genuinely differ.
+#
+# Signed distance (m) from env.start_positions along the start->target travel direction to
+# each riser boundary (monotonically increasing), and the height (m, relative to spawn
+# height) reached after crossing it. Regenerate with
+# src/FTR-Bench-terrain-gen/ftr_terrain_gen/obstacles/stairs_ascent_descent.py's
+# `_profile()` (call it directly with the matching TileSpec/DifficultyParams, walk
+# consecutive segment pairs, keep only boundaries where the height actually changes, and
+# take the LOWER-X segment's height as "after crossing" — the robot always travels
+# high-X -> low-X per birth.py's fixed start/target convention) if geometry changes again:
+big_ascent_step_edge_offsets_m: [1.200, 1.475, 1.750, 2.025, 2.300]
+big_ascent_step_edge_heights_m: [0.195, 0.390, 0.585, 0.780, 0.975]
+big_descent_step_edge_offsets_m: [2.000, 2.275, 2.550, 2.825, 3.100]
+big_descent_step_edge_heights_m: [-0.195, -0.390, -0.585, -0.780, -0.975]
+small_ascent_step_edge_offsets_m: [1.200, 1.505, 1.810]
+small_ascent_step_edge_heights_m: [0.170, 0.340, 0.510]
+small_descent_step_edge_offsets_m: [2.490, 2.795, 3.100]
+small_descent_step_edge_heights_m: [-0.170, -0.340, -0.510]

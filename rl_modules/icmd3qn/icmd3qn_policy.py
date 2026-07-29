@@ -1,20 +1,21 @@
 import torch
 import torch.nn as nn
 
-from rl_modules.pan_d3qn.pan_atd3qn_observation import PanATD3QNEncoder
+from rl_modules.icmd3qn.icmd3qn_observation import ICMD3QNEncoder
 
 
-class PanATD3QNPolicy(nn.Module):
+class ICMD3QNPolicy(nn.Module):
     """
-    Wraps PanATD3QNEncoder's Q(S'_t, a_t) with (epsilon-greedy) discrete action
+    Wraps ICMD3QNEncoder's Q(S'_t, a_t) with (epsilon-greedy) discrete action
     selection and decodes the chosen action into the continuous action vector
     FtrEnv._pre_physics_step expects: [track_v, track_w, front_frac, rear_frac].
 
-    FtrEnv treats actions as continuous fractions in [-1, 1] and scales them by
-    `flipper_dt` (degrees/step) before integrating into the flipper position target
-    (see ftr_env.py:_pre_physics_step). The paper's discrete {-1, 0, 1} = {CW, hold,
-    CCW} action already lives in exactly that range, so no further rescaling is
-    needed here — only the index -> (i, j) decode.
+    Action space (Eq. 3): discrete {-1, 0, 1} = {CW, hold, CCW} per flipper pair, with
+    angular increment delta_theta_f = pi/12 per step in the paper. FtrEnv treats actions
+    as continuous fractions in [-1, 1] scaled by `flipper_dt` (degrees/step) before
+    integrating into the flipper position target (see ftr_env.py:_pre_physics_step); the
+    paper's discrete action already lives in exactly that range, so only the
+    index -> (i, j) decode is needed here — no extra rescaling.
 
     Track velocity/turn rate are not part of the paper's action space (a human
     operator/planner is assumed to drive the tracks); `track_vel` fixes a constant
@@ -25,7 +26,7 @@ class PanATD3QNPolicy(nn.Module):
 
     def __init__(self, track_vel: float = 0.5, epsilon: float = 0.0, **encoder_kwargs):
         super().__init__()
-        self.q_network = PanATD3QNEncoder(**encoder_kwargs)
+        self.q_network = ICMD3QNEncoder(**encoder_kwargs)
         self.track_vel = track_vel
         self.epsilon = epsilon
 
@@ -41,8 +42,8 @@ class PanATD3QNPolicy(nn.Module):
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns (action, action_idx) so a TensorDictModule can expose both:
-        `action` (N, 4) drives the env, `action_idx` (N,) int64 is what the DQN
-        loss trains on — decoding action back to an index would be lossy/ambiguous.
+        `action` (N, 4) drives the env, `action_idx` (N,) int64 is what the DQN loss
+        (and the ICM's inverse model, icmd3qn_icm.py) trains on.
         """
         q = self.q_network(obs)  # (..., 9)
 
