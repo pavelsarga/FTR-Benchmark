@@ -1,3 +1,4 @@
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -9,6 +10,8 @@ from torchrl.modules import ActorCriticWrapper, NormalParamExtractor, Probabilis
 
 from marv_rl_training.environment.ftr_env_adapter import OBS_KEY
 from marv_rl_training.policies import PolicyConfig
+
+_log = logging.getLogger(__name__)
 
 
 class MitriakovMLP(nn.Module):
@@ -165,6 +168,15 @@ class MitriakovPolicyConfig(PolicyConfig):
         actor_value_wrapper = ActorCriticWrapper(policy_operator=policy_operator, value_operator=value_operator)
         if kwargs.get("device", None) is not None:
             actor_value_wrapper.to(kwargs["device"])
+            
+        if weights_path := kwargs.get("weights_path", None):
+            sd = torch.load(weights_path, map_location=kwargs.get("device") or "cpu")
+            missing_unexpected = actor_value_wrapper.load_state_dict(sd, strict=False)
+            _log.info(f"Loaded weights from {weights_path}")
+            if missing_unexpected.missing_keys:
+                _log.warning(f"Missing keys: {missing_unexpected.missing_keys}")
+            if missing_unexpected.unexpected_keys:
+                _log.warning(f"Unexpected keys: {missing_unexpected.unexpected_keys}")
 
         optim_groups = [
             {"params": policy_operator.parameters(), "name": "policy_operator", **self.actor_optimizer_opts},
