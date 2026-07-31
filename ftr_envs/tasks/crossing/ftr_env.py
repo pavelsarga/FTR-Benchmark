@@ -399,6 +399,41 @@ class FtrEnv(DirectRLEnv):
         self._robot.load_all_wheel_radius()
         self.scene.articulations["robot"] = self._robot
 
+        # C-TRAC (rl_modules/ctrac) needs real per-wheel PhysX contact forces for its
+        # ground-truth contact extraction (ctrac_contact.py) — IsaacLab sensors must be
+        # declared in the scene before scene creation, so this can't be done from inside
+        # CTRACModule itself (which is only constructed after _setup_scene has already
+        # run — see CrossingEnv.__init__). Only wired for robot_type == "marv" (every
+        # module this project adds targets marv; FTR's wheel-body prim layout differs —
+        # compare MarvWheelArticulation.set_robot_env's sibling-of-container wheel bodies
+        # vs FtrWheelArticulation's nested flipper_list/<side>_wheel/<code>{i} layout).
+        if getattr(self.cfg, "module_name", None) == "ctrac":
+            if self.cfg.robot_type != "marv":
+                raise NotImplementedError(
+                    "ctrac module requires robot_type: marv (its ContactSensorCfg wiring "
+                    "targets MarvWheelArticulation's wheel-body prim layout only)."
+                )
+            from omni.isaac.lab.sensors import ContactSensor, ContactSensorCfg
+
+            wheel_names_regex = "(" + "|".join(
+                f"{side}_flipper_wheel[1-5]" for side in ("front_left", "front_right", "rear_left", "rear_right")
+            ) + ")"
+            contact_sensor_cfg = ContactSensorCfg(
+                prim_path=f"{robot_cfg.prim_path}/{wheel_names_regex}",
+                update_period=0.0,
+                track_pose=False,
+                track_air_time=False,
+                force_threshold=1.0,
+                # No filter_prim_paths_expr: net_forces_w already reports each wheel body's
+                # total contact force, which in practice is terrain contact (wheels don't
+                # meaningfully contact each other) — filtering specifically to the terrain
+                # prim would need its exact path, which isn't uniformly known here across
+                # every terrain asset this project supports. Documented simplification, see
+                # ctrac_contact.py's module docstring.
+            )
+            self._ctrac_contact_sensor = ContactSensor(contact_sensor_cfg)
+            self.scene.sensors["ctrac_contact"] = self._ctrac_contact_sensor
+
         stage = self.scene.stage
         self.terrain_cfg.apply(stage)
 

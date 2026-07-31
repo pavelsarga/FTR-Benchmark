@@ -5,6 +5,7 @@ from rl_modules.icmd3qn.icmd3qn_module import ICMD3QNModule
 from rl_modules.hfc.hfc_module import HFCModule
 from rl_modules.mitriakov.mitriakov_module import MitriakovModule
 from rl_modules.creps.creps_module import CREPSModule
+from rl_modules.ctrac.ctrac_module import CTRACModule
 
 # Maps CrossingEnvCfg.module_name -> RLModule subclass. Add new reward implementations here.
 RLMODULE_REGISTRY: dict[str, type[RLModule]] = {
@@ -14,4 +15,5 @@ RLMODULE_REGISTRY: dict[str, type[RLModule]] = {
     "hfc": HFCModule,
     "mitriakov": MitriakovModule,
     "creps": CREPSModule,
+    "ctrac": CTRACModule,
 }

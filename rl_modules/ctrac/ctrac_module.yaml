@@ -1,0 +1,26 @@
+# CTRACModule static params — kept in the module's own yaml (not env_cfg_overrides)
+# because these aren't real CrossingEnvCfg dataclass fields: env_cfg_overrides is a plain
+# setattr loop onto the env config (see CLAUDE.md's "env_cfg_overrides gotcha" note), so a
+# field that doesn't already exist there would be silently ignored, not applied. Terminal
+# rewards (goal_reached_reward/failed_reward/timeout_penalty, Eq. 8's 150/-150/-225) ARE
+# real CrossingEnvCfg fields and belong in the training config's env_cfg_overrides instead,
+# same as every other module.
+
+# Posture-swing reward (Eq. 5-6). Causal adaptation of the paper's forward-looking window:
+# a trailing window of the last swing_window_k consecutive step-to-step deltas.
+swing_window_k: 10
+swing_alpha_pitch: 1.5   # alpha_p (Eq. 6)
+swing_alpha_roll: 1.0    # alpha_r (Eq. 6)
+swing_bmax_pitch_deg: 15.0   # b^max_p (Eq. 6) — literal paper value
+swing_bmax_roll_deg: 2.0     # b^max_r (Eq. 6) — literal paper value (deliberately tight)
+
+# Stabilization reward (Eq. 7). Static-stability-margin approximation of the paper's
+# literal energy-height NESM (see ctrac_module.py's docstring) — normalised by dividing by
+# this characteristic length before squashing through a sigmoid into (0, 1). Set to
+# roughly half MARV's flipper wheelbase (front-to-rear wheel-contact span).
+nesm_char_length: 0.3
+
+# Ground-truth contact extraction (ctrac_contact.py) — net contact force above this
+# (Newtons) counts a wheel as "in contact" for both the reward's NESM term and the C-VAE's
+# supervised targets.
+contact_force_threshold: 1.0
