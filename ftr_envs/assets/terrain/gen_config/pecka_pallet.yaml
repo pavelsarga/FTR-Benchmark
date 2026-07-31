@@ -21,14 +21,23 @@
 #   python generate_terrain.py terrain_config_pecka_pallet.yaml \
 #       --output-dir ../FTR-Benchmark/ftr_envs/assets/terrain --overwrite
 
+# HISTORY: this course used to be generated with xformOp:orient [0, 0, 0, 1.0], which
+# FTR-Benchmark's terrain.py reads as Gf.Quatd(w=0, xyz=(0,0,1)) — a 180 degree rotation
+# about Z (see assembler.py's build_config_yaml). With a single 1x1 tile that mirrors the
+# course onto itself, so the pallet actually sat front_margin from the OPPOSITE end and
+# the robot met it after ~6.5m of runway instead of the 3.5m the sizing note below
+# assumes. The generator now emits the w-first identity [1.0, 0, 0, 0], so the pallet is
+# where this config says it is. Any CREPS results predating that fix were measured
+# against the mirrored layout.
+
 name: pecka_pallet
 seed: 42
 cell_size: 0.05
-repeats: 1
+repeats: 10
 
 tile:
-  width: 10.8
-  depth: 5.0
+  width: 6.0
+  depth: 3.0
 
 border_width: 2.0
 base_z: 0.5

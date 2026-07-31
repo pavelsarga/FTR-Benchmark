@@ -9,10 +9,10 @@ prim_config:
   - prim_path: terrain
     attr_name: xformOp:orient
     value:
-    - 0
-    - 0
-    - 0
     - 1.0
+    - 0
+    - 0
+    - 0
 map:
   lower:
   - -46.0

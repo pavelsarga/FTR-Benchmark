@@ -150,6 +150,24 @@ class Terrain:
 
                 if attr_name == "xformOp:orient":
                     from pxr.Gf import Quatd
+                    # Gf.Quatd takes the REAL part FIRST: Quatd(w, x, y, z).
+                    # Config values must therefore be written w-first, e.g. identity is
+                    # [1.0, 0, 0, 0] (see ground.yaml) — NOT the XYZW [0, 0, 0, 1.0].
+                    # Written XYZW, an "identity" reads back as w=0, z=1: a 180 degree
+                    # rotation about Z that mirrors the whole terrain in X and Y. Nothing
+                    # else moves with it — birth.json spawn/target points, the .map
+                    # heightmap that get_obs() samples, and any row/column indexing derived
+                    # from the terrain's generator config all stay un-rotated — so the
+                    # robot drives on a different obstacle than it spawns for, observes,
+                    # and is scored against. Warn loudly rather than silently mirroring.
+                    if tuple(value) == (0, 0, 0, 1.0):
+                        import carb
+                        carb.log_warn(
+                            f"{_prim_path}: xformOp:orient={list(value)} is read as "
+                            f"Quatd(w=0, xyz=(0,0,1)) — a 180 degree rotation about Z, not identity. "
+                            f"If identity was intended, write it w-first as [1.0, 0, 0, 0]. "
+                            f"Terrains that deliberately rely on this rotation must say so in their config."
+                        )
                     value = Quatd(*value)
                 elif attr_name == "xformOp:translate":
                     from pxr.Gf import Vec3d

@@ -8,11 +8,14 @@
 # row 1 at positive Y — mitriakov_module.py's _row_mask() keys off that sign to pick the
 # matching edge-geometry table per env.
 #
-# extra.birth_platform_height on each row cross-wires ONLY the platform-side birth Z to
-# the OTHER row's height (row 0's mesh is genuinely 0.975m tall but its platform-side
-# birth point is computed as if height=0.51, and vice versa for row 1) — an empirical fix
-# for observed in-sim spawn behavior, NOT a statement that the geometry itself is wrong.
-# Does not affect build_usd/build_heightmap (the actual mesh), only birth.json.
+# HISTORY: both rows used to carry an `extra.birth_platform_height` that cross-wired the
+# platform-side birth Z to the OTHER row's height. That was an empirical patch for the
+# xformOp:orient bug (identity written XYZW as [0,0,0,1.0] read back as a 180 degree
+# rotation about Z — see assembler.py's build_config_yaml), which mirrored the course and
+# therefore swapped the two lanes: a robot spawning at row 0's Y physically stood on row
+# 1's staircase, so its spawn Z had to use row 1's height. The orient is fixed now, the
+# lanes are where birth.json says they are, and the cross-wiring has been removed — each
+# row's platform-side birth Z is its own height again. Do not reintroduce it.
 #
 # Uses stairs_ascent_descent (NOT raised_stairs/lowered_stairs — those span the tile
 # symmetrically as a round trip, climb-then-back-down, since birth.py places start/target
@@ -42,7 +45,14 @@
 #       --output-dir ../FTR-Benchmark/ftr_envs/assets/terrain --dry-run
 #   python generate_terrain.py terrain_config_mitriakov_stairs.yaml \
 #       --output-dir ../FTR-Benchmark/ftr_envs/assets/terrain --overwrite
-
+#
+# The xformOp:orient bug this course used to be tuned around is fixed (the generator now
+# emits the w-first identity [1.0, 0, 0, 0]), so regenerating is safe and expected.
+# After any regeneration, re-verify that the measured step edges still match
+# rl_modules/mitriakov/mitriakov_module.yaml's big_/small_ *_step_edge_offsets_m
+# tables (they are measured from start_positions, so entry_margin, tile.width and
+# birth_clearance must keep moving together), and that mitriakov_module.py's
+# _row_mask() sign still matches: start_positions[:, 1] > 0 selects row 1 ("small").
 name: mitriakov_stairs
 seed: 42
 cell_size: 0.05
@@ -71,8 +81,8 @@ rows:
   - type: stairs_ascent_descent   # row 0: "Big" (Table 3)
     min_height: 0.975
     max_height: 0.975
-    extra: {entry_margin: 2.2, n_steps: 5, step_length: 0.275, birth_platform_height: 0.51}
+    extra: {entry_margin: 2.2, n_steps: 5, step_length: 0.275}
   - type: stairs_ascent_descent   # row 1: "Small" (Table 3)
     min_height: 0.51
     max_height: 0.51
-    extra: {entry_margin: 2.2, n_steps: 3, step_length: 0.305, birth_platform_height: 0.975}
+    extra: {entry_margin: 2.2, n_steps: 3, step_length: 0.305}
