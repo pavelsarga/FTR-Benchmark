@@ -41,8 +41,8 @@ rows:
   # trench + 1m goal. Here narrowed to 0.5m-wide trenches with a wider 2m
   # level ground section between them (1 + 0.5 + 2 + 0.5 + 1 = 5m).
   - type: double_trench
-    min_height: 0.15
-    max_height: 0.3
+    min_height: 0.1
+    max_height: 0.25
     extra: {trench_width: 1.0, middle_width: 1.0}
 
   # widening_trench defaults: 1.5m spawn + trench (width graded 0.3m ->
@@ -55,17 +55,17 @@ rows:
   # direction — the robot rides along its top, not over it) + 1.5m goal.
   # Here a shorter, closer, narrower log.
   - type: log_crossing
-    min_height: 0.20
-    max_height: 0.30
-    extra: {log_length: 1.5, log_width: 0.2}
+    min_height: 0.05
+    max_height: 0.25
+    extra: {log_length: 1.5, log_width: 0.25}
 
   # twin_rails defaults: 1m spawn + 0.2m rail + 1m gap + 0.2m rail + goal,
   # enclosed on both sides by 0.1m guard walls 0.15m above the rails. Here
   # thicker rails with a wider gap and taller walls.
   - type: twin_rails
-    min_height: 0.15
+    min_height: 0.1
     max_height: 0.3
-    extra: {rail_width: 0.3, gap_width: 1.5, wall_height: 0.25}
+    extra: {rail_width: 0.4, gap_width: 1.5, wall_height: 0.25}
 
   # diagonal_trunk defaults: a raised block crossing the lane at a tilt
   # graded -45deg -> 45deg across repeats (never exactly 0 = perpendicular),
@@ -82,21 +82,21 @@ rows:
   # only the rise per step (and platform height) grades with difficulty.
   # Here fewer, deeper treads.
   - type: raised_stairs
-    min_height: 0.30
-    max_height: 0.80
-    extra: {n_steps: 4, step_length: 0.2, platform_length: 0.8}
+    min_height: 0.15
+    max_height: 0.6
+    extra: {n_steps: 4, step_length: 0.3, platform_length: 0.5}
 
   # lowered_stairs defaults: same layout as raised_stairs but recessed (down
   # into a pit instead of up onto a platform), enclosed by 0.1m side beams
   # on every recessed segment (see MIN_EDGE_MARGIN).
   - type: lowered_stairs
-    min_height: 0.3
-    max_height: 0.8
-    extra: {n_steps: 4, step_length: 0.2, platform_length: 0.8}
+    min_height: 0.15
+    max_height: 0.6
+    extra: {n_steps: 4, step_length: 0.3, platform_length: 0.5}
   
   - type: raised_stairs
-    min_height: 0.3
-    max_height: 0.8
+    min_height: 0.15
+    max_height: 0.6
     extra: {n_steps: 3, step_length: 0.4, platform_length: 0.8}
 
   # cobblestones defaults: 1m spawn + a 3m x 3m field split into an 11x11
@@ -129,8 +129,8 @@ rows:
   # the outermost 4 on each end hidden (height 0), giving a flat corner
   # before the visible steps begin.
   - type: diagonal_pyramid
-    min_height: 0.20
-    max_height: 0.60
+    min_height: 0.15
+    max_height: 0.5
     extra: {n_rows: 13, hidden_layers: 4}
 
   # half_platform defaults: 1m spawn + a 3m x 3m field with only its LEFT or
@@ -139,8 +139,8 @@ rows:
   # along the row, for asymmetric-traversal training. diff.height grades the
   # raised half's height.
   - type: half_platform
-    min_height: 0.10
-    max_height: 0.35
+    min_height: 0.1
+    max_height: 0.3
     extra: {field_size: 3.0}
 
   # flat_patch: no obstacle, just the bare tile — a rest/baseline lane.
@@ -149,10 +149,11 @@ rows:
   # stump: a fixed-height smooth radial bump whose center slides from
   # slightly left of the lane's centerline (t=0) to slightly right (t=1).
   - type: stump
+    extra: {height: 0.25}
 
   # stairs_ascent_descent defaults: a one-way staircase spanning the full
   # tile, alternating ascending/descending by repeat — the platform's
   # height (diff.height) grades across repeats.
   - type: stairs_ascent_descent
-    min_height: 0.3
-    max_height: 0.8
+    min_height: 0.15
+    max_height: 0.6
