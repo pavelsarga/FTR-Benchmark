@@ -40,6 +40,13 @@ from rl_modules.ctrac.ctrac_observation import PARTIAL_DIM
 
 _log = logging.getLogger(__name__)
 
+# SB3 SAC's LOG_STD_MIN / LOG_STD_MAX, as std bounds (see CTRACActor.forward). Only the
+# upper bound actually binds: NormalParamExtractor's biased-softplus floor (0.01) already
+# sits well above exp(-20), so the lower bound is inert — kept only to state the full SB3
+# interval explicitly.
+_MIN_SCALE = 2.061153622438558e-09  # exp(-20)
+_MAX_SCALE = 7.38905609893065       # exp(2)
+
 
 class CTRACObsHistory(nn.Module):
     """Per-env ring buffer of the last history_len partial-obs frames (o^H_t, paper Eq. 9),
@@ -106,6 +113,12 @@ class CTRACActorNet(nn.Module):
         o_t = partial[..., :-1]  # drop reset flag before feeding the actor trunk
         actor_in = torch.cat([o_t, z, contact.reshape(z.shape[0], -1), prob], dim=-1)
         loc5, scale5 = self.trunk(actor_in)  # each (N,5): [v, d_FL, d_FR, d_RL, d_RR]
+
+        # SB3's SAC (the implementation the paper states it builds on) clamps log_std to
+        # [-20, 2]; NormalParamExtractor's softplus output is unbounded above, so without
+        # this the entropy term can grow the std without limit — observed in run
+        # train_ctrac_11305386 as a monotonically diverging actor loss.
+        scale5 = scale5.clamp(_MIN_SCALE, _MAX_SCALE)
 
         n = loc5.shape[0]
         w_loc = torch.zeros(n, 1, device=loc5.device, dtype=loc5.dtype)

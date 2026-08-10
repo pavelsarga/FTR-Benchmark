@@ -24,7 +24,7 @@ PRIVILEGED_HMAP_ROWS = 48
 PRIVILEGED_HMAP_COLS = 20
 PRIVILEGED_DIM = PRIVILEGED_HMAP_ROWS * PRIVILEGED_HMAP_COLS + 4 * 3 + 4  # = 976
 
-TOTAL_DIM = PARTIAL_DIM + PRIVILEGED_DIM  # = 1226
+TOTAL_DIM = PARTIAL_DIM + PRIVILEGED_DIM  # = 1227
 
 # Offsets into the privileged slice — shared by ctrac_policy.py's C-VAE training-target
 # slicing (train_sac.py/pretrain_ctrac_cvae.py) so the layout is defined in exactly one

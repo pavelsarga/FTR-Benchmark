@@ -99,8 +99,24 @@ class CTRACContactExtractor:
                 self._sensor_body_ids[flipper] = torch.as_tensor([sensor_ids[i] for i in order], dtype=torch.long)
 
     def compute(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns (contact_points (N,4,3) world frame, contact_prob (N,4) in {0.0, 1.0}),
-        flipper order matching FLIPPER_NAMES / env.flipper_positions ([FL,FR,RL,RR])."""
+        """Returns (contact_points (N,4,3) ROBOT-frame, contact_prob (N,4) in {0.0, 1.0}),
+        flipper order matching FLIPPER_NAMES / env.flipper_positions ([FL,FR,RL,RR]).
+
+        Points are relative to the robot base and yaw-derotated (x forward, y left, z the
+        height of the contact below the base), matching the paper's "4x2 relative coords of
+        contacts" — c_t is a robot-relative quantity there, not a world position. We keep
+        the z component too (a superset of the paper's 2-D c_t); it is the same small,
+        robot-relative scale as x/y and the NESM reward reads the xy slice only.
+
+        Returning raw world-frame body_pos_w here (as this did originally) is unusable
+        downstream: the contact points are both a C-VAE *regression target* and part of the
+        privileged critic observation, and no vecnorm runs on the ctrac obs. On a course
+        with world coordinates in the ~10-20 m range that made L_est ~= 268 (RMS ~16 m, an
+        absolute position that is simply not inferable from a robot-centric heightmap), so
+        the C-VAE spent all its capacity on an unlearnable target while feeding the critic
+        huge unnormalised inputs. The same yaw-only convention is used for goal_xy in
+        CTRACModule.get_observations, so the two agree.
+        """
         env = self.env
         sensor = getattr(env, "_ctrac_contact_sensor", None)
         body_pos_w = env._robot.data.body_pos_w  # (N, num_bodies, 3) — real PhysX positions
@@ -131,6 +147,15 @@ class CTRACContactExtractor:
             points.append(point)
             probs.append(any_contact.float())
 
-        contact_points = torch.stack(points, dim=1)  # (N, 4, 3)
+        contact_points = torch.stack(points, dim=1)  # (N, 4, 3), still world frame here
         contact_prob = torch.stack(probs, dim=1)  # (N, 4)
+
+        # World -> robot frame: translate to the base, then de-rotate by yaw only (same
+        # convention as goal_xy in CTRACModule.get_observations).
+        rel = contact_points - env.positions.unsqueeze(1)  # (N,4,3)
+        yaw = env.orientations_3[:, 2]
+        cos_y, sin_y = torch.cos(yaw).unsqueeze(-1), torch.sin(yaw).unsqueeze(-1)  # (N,1)
+        x_b = cos_y * rel[..., 0] + sin_y * rel[..., 1]
+        y_b = -sin_y * rel[..., 0] + cos_y * rel[..., 1]
+        contact_points = torch.stack([x_b, y_b, rel[..., 2]], dim=-1)  # (N,4,3)
         return contact_points, contact_prob

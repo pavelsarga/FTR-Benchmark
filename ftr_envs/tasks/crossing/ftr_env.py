@@ -96,6 +96,20 @@ class FtrEnvCfg(DirectRLEnvCfg):
     track_ang_vel_max: float = 1.0   # max |w| (rad/s)
     fixed_forward_vel: float | None = None  # if set, overrides policy linear velocity with this constant (m/s)
 
+    # ctrac only: attaches a real ContactSensor for ground-truth per-flipper contact
+    # (ctrac_contact.py). Default True (needed for training's reward/C-VAE targets). Set
+    # False via env_cfg_overrides to skip it — e.g. for local eval/visualization on a
+    # machine where the sensor's own event-driven initialization races the main
+    # simulation's physics-view creation and loses (confirmed: reproduces even at
+    # num_envs=1 on one specific local GPU/driver combination while the identical code
+    # runs fine on the training cluster — an IsaacLab-internal timing issue, not
+    # something fixable from here). Safe to disable at eval time: the actor's action only
+    # depends on the C-VAE's own *estimated* contact from proprioceptive history, not
+    # ground truth — ctrac_contact.py already degrades gracefully with no sensor
+    # (contact_prob always 0, points fall back to the lowest wheel), which only skews the
+    # logged reward's stabilization term and training targets, not the policy's behavior.
+    ctrac_contact_sensor_enabled: bool = True
+
     # MarvWheelArticulation normally groups wheel joints into true left/right side
     # (af6aa92 fixed the equivalent FTR LF/LR/RL/RR mislabeling bug). Policies trained on
     # FTR *before* that fix learned to steer under the old (buggy) front/rear wheel-group
@@ -145,6 +159,7 @@ class FtrEnvCfg(DirectRLEnvCfg):
     # so old configs that don't set these fields continue to work unchanged.
     flipper_material_friction: float = 5.0    # rigid flipper arm (steel chassis)
     wheel_material_friction: float = 10.0    # rubber tracks; effective = wheel × terrain_dynamic
+    body_material_friction: float = 0.1       # MARV only: base_link/hull, slick by default — see robot_config below
     terrain_static_friction: float = 0.9      # global scene physics_material default
     terrain_dynamic_friction: float = 0.7     # global scene physics_material default
 
@@ -172,6 +187,7 @@ class FtrEnvCfg(DirectRLEnvCfg):
 
         "flipper_material_friction": 5,
         "wheel_material_friction": 10,
+        "body_material_friction": 0.1,
 
         "chassis_wheel_render_mass": 2.98,
         "flipper_wheel_render_mass": 1,
@@ -210,6 +226,7 @@ class FtrEnv(DirectRLEnv):
         self.cfg.robot_config["sync_flipper_control"] = self.cfg.sync_flipper_control
         self.cfg.robot_config["flipper_material_friction"] = self.cfg.flipper_material_friction
         self.cfg.robot_config["wheel_material_friction"] = self.cfg.wheel_material_friction
+        self.cfg.robot_config["body_material_friction"] = self.cfg.body_material_friction
         self.cfg.robot_config["flipper_pos_max"] = self.cfg.flipper_pos_max_deg
         self.cfg.robot_config["legacy_ftr_turning"] = self.cfg.legacy_ftr_turning
         self.cfg.robot_config["wheel1_collision_radius_scale"] = self.cfg.wheel1_collision_radius_scale
@@ -394,6 +411,27 @@ class FtrEnv(DirectRLEnv):
         else:
             robot_cfg = self.cfg.robot
             RobotClass = FtrWheelArticulation
+
+        if getattr(self.cfg, "module_name", None) == "ctrac":
+            if self.cfg.robot_type != "marv":
+                raise NotImplementedError(
+                    "ctrac module requires robot_type: marv (its ContactSensorCfg wiring "
+                    "targets MarvWheelArticulation's wheel-body prim layout only)."
+                )
+            # PhysX only reports contacts for bodies that have the contact-reporter API
+            # attached, which IsaacLab only adds at spawn time when this flag is set — no
+            # other module in this project uses ContactSensor, so it was never turned on.
+            # Without it, ContactSensor._initialize_impl() raises "could not find any
+            # bodies with contact reporter API" even though the prims/body names match the
+            # sensor's regex fine (confirmed against a real cluster run — the sensor's own
+            # find_bodies() failure two lines below was a downstream symptom of this, not a
+            # separate bug: body_physx_view stays None because _initialize_impl() never
+            # completed). Lives directly on the spawn cfg (RigidObjectSpawnerCfg, e.g.
+            # UsdFileCfg) — a SIBLING of rigid_props/articulation_props, not nested inside
+            # either. Must be set before RobotClass(...) actually spawns the prims.
+            if self.cfg.ctrac_contact_sensor_enabled:
+                robot_cfg.spawn.activate_contact_sensors = True
+
         self._robot = RobotClass(robot_cfg, device=self.device)
         self._robot.set_robot_env(self.cfg.robot_config, self.cfg.robot_render_config)
         self._robot.load_all_wheel_radius()
@@ -407,12 +445,8 @@ class FtrEnv(DirectRLEnv):
         # module this project adds targets marv; FTR's wheel-body prim layout differs —
         # compare MarvWheelArticulation.set_robot_env's sibling-of-container wheel bodies
         # vs FtrWheelArticulation's nested flipper_list/<side>_wheel/<code>{i} layout).
-        if getattr(self.cfg, "module_name", None) == "ctrac":
-            if self.cfg.robot_type != "marv":
-                raise NotImplementedError(
-                    "ctrac module requires robot_type: marv (its ContactSensorCfg wiring "
-                    "targets MarvWheelArticulation's wheel-body prim layout only)."
-                )
+        # robot_type is already validated above (before activate_contact_sensors was set).
+        if getattr(self.cfg, "module_name", None) == "ctrac" and self.cfg.ctrac_contact_sensor_enabled:
             from omni.isaac.lab.sensors import ContactSensor, ContactSensorCfg
 
             wheel_names_regex = "(" + "|".join(
@@ -431,8 +465,19 @@ class FtrEnv(DirectRLEnv):
                 # every terrain asset this project supports. Documented simplification, see
                 # ctrac_contact.py's module docstring.
             )
-            self._ctrac_contact_sensor = ContactSensor(contact_sensor_cfg)
-            self.scene.sensors["ctrac_contact"] = self._ctrac_contact_sensor
+            try:
+                self._ctrac_contact_sensor = ContactSensor(contact_sensor_cfg)
+                self.scene.sensors["ctrac_contact"] = self._ctrac_contact_sensor
+            except Exception as e:
+                # Defensive: the sensor's own event-driven _initialize_impl() can fail
+                # asynchronously (races the main simulation's physics-view creation on
+                # some local GPU/driver combinations — see ctrac_contact_sensor_enabled's
+                # docstring) rather than raising synchronously here, so this except may
+                # not even be what catches it in practice. Either way, ctrac_contact.py
+                # already handles env._ctrac_contact_sensor being absent gracefully.
+                _log.warning(f"ctrac ContactSensor construction failed ({e}); continuing without it "
+                             "— contact_prob will read 0, points fall back to the lowest wheel.")
+                self._ctrac_contact_sensor = None
 
         stage = self.scene.stage
         self.terrain_cfg.apply(stage)

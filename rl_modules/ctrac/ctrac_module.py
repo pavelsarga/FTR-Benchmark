@@ -76,14 +76,19 @@ def _crop_and_pad(raw: torch.Tensor, x_lo: float, x_hi: float, y_lo: float, y_hi
 
 
 def _min_edge_signed_distance(polygon: torch.Tensor, point: torch.Tensor) -> torch.Tensor:
-    """polygon: (N,4,2) vertices in a consistent winding order (here [FL,FR,RR,RL], the
-    proper rectangle winding — NOT env.flipper_positions' [FL,FR,RL,RR] order, which would
-    cross diagonally). point: (N,2). Returns (N,) the minimum signed perpendicular distance
-    from point to each polygon edge line — positive on the same side for every edge under a
-    consistent winding (i.e. "inside" the support polygon). Winding direction (CW vs CCW)
-    only flips the overall sign; unverified against Isaac Sim's actual coordinate handedness
-    (see ctrac_module.py's module docstring on unverifiable-without-Isaac-Sim geometry) —
-    if margins come out inverted in practice, negate this function's return value.
+    """polygon: (N,4,2) vertices in a consistent winding order (here [FL,RL,RR,FR], a
+    non-self-intersecting CCW rectangle winding — NOT env.flipper_positions' [FL,FR,RL,RR]
+    order, which would cross diagonally, and NOT [FL,FR,RR,RL] either, which is a valid
+    non-crossing rectangle but wound CW under this function's cross-product convention).
+    point: (N,2). Returns (N,) the minimum signed perpendicular distance from point to each
+    polygon edge line — positive when the point is on the interior side of every edge (i.e.
+    "inside" the support polygon), for a CCW-wound polygon under the standard 2D cross
+    product sign convention. Verified against a synthetic unit-square case: CoG at the
+    square's center returns +0.5 (half the square's side) with this vertex order, vs -0.5
+    with [FL,FR,RR,RL] — confirming the CW ordering previously used here inverted the sign,
+    so a robot standing stably on all 4 flippers was scored as if its CoG were outside its
+    support base (rc pinned near -1 almost every step, ~-0.8 to -0.9 observed in real 13M-
+    step training run rew.csv — not a real instability signal, a sign bug).
     """
     v0 = polygon
     v1 = torch.roll(polygon, shifts=-1, dims=1)
@@ -192,12 +197,15 @@ class CTRACModule(RLModule):
         """rc (Eq. 7) — static-stability-margin approximation of the paper's literal
         energy-height NESM (see this module's docstring for why: no CoG/inertia data
         exposed at this level). contact_points/prob: this step's ground truth, [FL,FR,RL,RR]
-        order (ctrac_contact.py's FLIPPER_NAMES)."""
-        env = self.env
+        order (ctrac_contact.py's FLIPPER_NAMES), in the ROBOT frame."""
         cfg = self.cfg
         fl, fr, rl, rr = (contact_points[:, i, :2] for i in range(4))
-        polygon = torch.stack([fl, fr, rr, rl], dim=1)  # proper rectangle winding, not [FL,FR,RL,RR]
-        cog_xy = env.positions[:, :2]  # CoG approximated by robot base position (no separate CoG offset data)
+        polygon = torch.stack([fl, rl, rr, fr], dim=1)  # CCW rectangle winding — see _min_edge_signed_distance
+        # CoG approximated by the robot base (no separate CoG offset data). ctrac_contact.py
+        # now returns robot-frame points, so the base is the origin by construction — keeping
+        # env.positions here (correct only while the points were world-frame) would add the
+        # robot's world coordinate to a robot-frame polygon, putting the CoG far outside it.
+        cog_xy = torch.zeros_like(polygon[:, 0, :])
 
         margin = _min_edge_signed_distance(polygon, cog_xy)  # (N,)
         norm_margin = torch.sigmoid(margin / cfg.nesm_char_length)  # Norm(Emin_nesm) in [0,1]
