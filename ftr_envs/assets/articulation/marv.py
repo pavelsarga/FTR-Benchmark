@@ -149,6 +149,13 @@ class MarvWheelArticulation(FtrWheelArticulation):
         for flipper_link in ("front_left_flipper", "front_right_flipper", "rear_left_flipper", "rear_right_flipper"):
             bind_physics_material(f"{container}/{flipper_link}/collisions", flipper_material)
 
+        # base_link (hull) has no material of its own either — previously left unbound
+        # so it fell back to the scene-wide physics_material (terrain_static/dynamic_friction).
+        body_material = ensure_physics_material(
+            f"{container}/Looks/body_material", robot_config.get("body_material_friction", 0.1)
+        )
+        bind_physics_material(f"{container}/base_link/collisions", body_material)
+
         # Wheel joints live under their parent flipper link, e.g.
         # front_left_flipper_wheel1_j is under front_left_flipper. The wheel *bodies*
         # (front_left_flipper_wheel1, ...) are siblings of marv_description, not nested
