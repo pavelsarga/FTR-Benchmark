@@ -3,6 +3,7 @@ from rl_modules.marv_rl.marv_rl_module import MarvRLModule
 from rl_modules.atd3qn.atd3qn_module import ATD3QNModule
 from rl_modules.icmd3qn.icmd3qn_module import ICMD3QNModule
 from rl_modules.hfc.hfc_module import HFCModule
+from rl_modules.hfcil.hfcil_module import HFCILModule
 from rl_modules.mitriakov.mitriakov_module import MitriakovModule
 from rl_modules.creps.creps_module import CREPSModule
 from rl_modules.ctrac.ctrac_module import CTRACModule
@@ -13,6 +14,7 @@ RLMODULE_REGISTRY: dict[str, type[RLModule]] = {
     "atd3qn": ATD3QNModule,
     "icmd3qn": ICMD3QNModule,
     "hfc": HFCModule,
+    "hfcil": HFCILModule,
     "mitriakov": MitriakovModule,
     "creps": CREPSModule,
     "ctrac": CTRACModule,

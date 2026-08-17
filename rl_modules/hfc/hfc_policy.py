@@ -25,7 +25,6 @@ POSE_NAMES = [
     "DESCENDING_REAR",
 ]
 NUM_POSES = len(POSE_NAMES)
-ASCENDING_REAR_IDX = POSE_NAMES.index("ASCENDING_REAR")
 
 # [front_frac, rear_frac] per pose (see hfc_policy.py's module docstring for the
 # normalisation method against the reference repo's raw radian templates).
@@ -40,6 +39,49 @@ POSE_FRACTIONS = [
     (0.0, 0.0333),      # DOWN_STAIRS
     (-0.15, 0.2667),    # DESCENDING_REAR
 ]
+
+# Poses exempt from HFCActionDecoder's below_body_extra_deg lift. The two stair poses are
+# matched to stair geometry rather than to ground clearance — their flipper angles set how
+# the tracks meet the tread/riser edge, so deepening them changes where the robot contacts
+# the step rather than just raising the chassis. Left at the reference-repo values.
+NO_BELOW_BODY_EXTRA = ("UP_STAIRS", "DOWN_STAIRS")
+
+# Absolute per-pose targets (front_deg, rear_deg) that bypass the fraction math AND the
+# below_body_extra_deg lift entirely. DESCENDING_FRONT's 80 deg is a deliberate pose
+# choice -- pinned deeper than level to plant the robot harder on a descent -- not "however
+# wide front_down_deg/back_down_deg happen to be configured" (that pair is the mechanical
+# joint limit, currently 90 by default; scaling DF's fraction against it would silently
+# retarget the pose every time the limit changes). Still clamped to the real limit below,
+# so this can never command past the joint stop even if the limit is narrowed under 80.
+POSE_OVERRIDES_DEG = {"DESCENDING_FRONT": (80.0, -80.0)}
+
+# Roll-stabilization PD gains (Eq. 7) and per-pose escape-maneuver magnitudes (Eq. 8),
+# in RAW RADIANS -- the unit both the paper's own numbers and the reference implementation
+# use (augmented_robot_trackers/src/control/marv_flipper_modulator.py +
+# .../configs/marv_flipper_modulator_config.yaml: roll_stabilization_p/d and
+# calculate_flipper_action's per-state front/rear corrections, added directly onto a raw-
+# radian pose target there). NOT normalized [-1,1] action units -- HFCActionDecoder.forward()
+# converts these to normalized deltas by dividing by each group's half-range, so they stay
+# correct regardless of front_up_deg/etc.
+#
+# kp is the reference's roll_stabilization_p; kd is its roll_stabilization_d (0.0 -- the
+# real deployed controller uses pure-proportional roll stabilization, no derivative term).
+DEFAULT_KP_RAD = 1.4
+DEFAULT_KD_RAD = 0.0
+
+# (front_rad, rear_rad) per pose. ASCENDING_REAR is the reference's value, NOT the paper's
+# stated Eq. 8 example (-0.3/+0.5 rad) -- per explicit user correction, the paper's number
+# has flipped signs and is too conservative; +0.5/-0.7 is what the real robot actually runs.
+# Every other row has no paper number at all, so the reference is used un-second-guessed.
+# Poses with no entry (NEUTRAL, DESCENDING_REAR) get no escape maneuver, matching the
+# reference (its calculate_flipper_action has no branch for them either).
+DEFAULT_ESCAPE_RAD = {
+    "ASCENDING_FRONT":  (-0.2, +0.2),
+    "ASCENDING_REAR":   (+0.5, -0.7),
+    "DESCENDING_FRONT": (+0.4, -0.5),
+    "UP_STAIRS":        (+0.10, -0.2),
+    "DOWN_STAIRS":      (+0.10, -0.2),   # same row as UP_STAIRS in the reference
+}
 
 # HFCObservation's fixed field layout (hfc_module.py:get_observations) — 24-D total.
 HM_DIM = 15
@@ -146,45 +188,107 @@ class HFCActionDecoder(nn.Module):
     via Eq. 9's a_i = a_temp^i + a_stab^i + a_em^i (see this file's module docstring for
     the exact formulas and index convention: [FL, FR, RL, RR] == paper's [a1, a2, a3, a4]).
 
-    kp/kd (Eq. 7, no paper-given numeric value — roll stabilization is unconditional,
-    independent of pose) and escape_mods (Eq. 8, paper gives only one numeric example —
-    the ascending_rear row is warm-started at it) are the parameters PPO trains using
-    marv_rl's reward, per the user's explicit "train via RL instead of IL" decision.
+    kp/kd (Eq. 7 -- roll stabilization is unconditional, independent of pose) and
+    escape_mods (Eq. 8) are FIXED constants, not learned: sourced from the real deployed
+    reference controller (paper where the two conflict) -- see DEFAULT_KP_RAD/DEFAULT_KD_RAD/
+    DEFAULT_ESCAPE_RAD above. Earlier this project trained them via PPO instead of using the
+    paper's design; that RL stage did not work out and has been dropped in favor of matching
+    the paper/reference as closely as possible, training only the SDSM classifier (by
+    imitation, see rl_modules/hfcil).
     """
 
-    def __init__(self, front_up_deg: float, front_down_deg: float, back_up_deg: float, back_down_deg: float):
+    def __init__(self, front_up_deg: float, front_down_deg: float, back_up_deg: float, back_down_deg: float,
+                 below_body_extra_deg: float = 10.0, kp: float = DEFAULT_KP_RAD, kd: float = DEFAULT_KD_RAD,
+                 escape_rad: "dict[str, tuple[float, float]] | None" = None):
+        """below_body_extra_deg: pushes every flipper that a pose places BELOW the body
+        (front rotated down, i.e. front_frac > 0; rear rotated down, i.e. rear_frac < 0)
+        this many degrees further down, raising the chassis. Applied in radians on the
+        target angle, NOT to POSE_FRACTIONS — the fractions are dimensionless and are
+        multiplied by a different scale per direction, so adding a constant there would
+        mean a different number of degrees for the front and rear groups.
+
+        A flipper at exactly 0 (level with the body) is not "below" it and is left alone,
+        so ASCENDING_FRONT's rear and DOWN_STAIRS' front are unchanged. The poses in
+        NO_BELOW_BODY_EXTRA (the two stair poses) are exempt entirely — see that constant.
+
+        Targets are clamped to the mechanical limit afterwards regardless of source (fraction
+        math or POSE_OVERRIDES_DEG), so nothing here can ever command past the joint stop.
+        set below_body_extra_deg=0.0 to reproduce the reference repo's original poses exactly
+        (POSE_OVERRIDES_DEG entries are unaffected either way — they bypass the lift, not
+        just the fraction math; see that constant).
+
+        kp/kd/escape_rad: see DEFAULT_KP_RAD/DEFAULT_KD_RAD/DEFAULT_ESCAPE_RAD's module-level
+        comment for units and provenance. escape_rad, if given, replaces DEFAULT_ESCAPE_RAD
+        wholesale (not merged) -- pass a full 5-entry dict to override only some poses.
+        """
         super().__init__()
         front_up_rad, front_down_rad = math.radians(front_up_deg), math.radians(front_down_deg)
         back_up_rad, back_down_rad = math.radians(back_up_deg), math.radians(back_down_deg)
         front_low, front_high = -front_up_rad, front_down_rad
         rear_low, rear_high = -back_down_rad, back_up_rad
+        extra_rad = math.radians(below_body_extra_deg)
 
         front_cmds, rear_cmds = [], []
-        for front_frac, rear_frac in POSE_FRACTIONS:
-            front_target = front_frac * (front_up_rad if front_frac < 0 else front_down_rad)
-            rear_target = rear_frac * (back_up_rad if rear_frac > 0 else back_down_rad)
+        for pose_name, (front_frac, rear_frac) in zip(POSE_NAMES, POSE_FRACTIONS):
+            override = POSE_OVERRIDES_DEG.get(pose_name)
+            if override is not None:
+                front_target, rear_target = (math.radians(v) for v in override)
+            else:
+                front_target = front_frac * (front_up_rad if front_frac < 0 else front_down_rad)
+                rear_target = rear_frac * (back_up_rad if rear_frac > 0 else back_down_rad)
+                lift = 0.0 if pose_name in NO_BELOW_BODY_EXTRA else extra_rad
+                if front_frac > 0:  # front flipper below the body -> deeper, capped at the limit
+                    front_target = min(front_target + lift, front_down_rad)
+                if rear_frac < 0:   # rear flipper below the body -> deeper (more negative)
+                    rear_target = max(rear_target - lift, -back_down_rad)
+            # Clamp to what the machine can actually reach (redundant for the fraction
+            # branch, which already clamps above; not redundant for an override).
+            front_target = min(max(front_target, -front_up_rad), front_down_rad)
+            rear_target = min(max(rear_target, -back_down_rad), back_up_rad)
             # Inverse of FtrEnv's `target = low + unit * (high - low)`, unit = (cmd + 1) / 2.
             front_cmds.append(2.0 * (front_target - front_low) / (front_high - front_low) - 1.0)
             rear_cmds.append(2.0 * (rear_target - rear_low) / (rear_high - rear_low) - 1.0)
         self.register_buffer("pose_commands", torch.tensor([front_cmds, rear_cmds]).T.clamp(-1.0, 1.0))  # (7, 2)
 
-        self.kp = nn.Parameter(torch.tensor(0.0))
-        self.kd = nn.Parameter(torch.tensor(0.0))
+        # Half-ranges to convert a raw-radian correction into the normalized [-1,1] delta
+        # it corresponds to (inverse of the same affine map pose_commands used above, applied
+        # to a DELTA rather than an absolute target, so no low/high offset here -- just scale).
+        self._front_half_range = (front_high - front_low) / 2.0
+        self._rear_half_range = (rear_high - rear_low) / 2.0
+
+        self.register_buffer("kp", torch.tensor(float(kp)))
+        self.register_buffer("kd", torch.tensor(float(kd)))
+        escape_table = escape_rad if escape_rad is not None else DEFAULT_ESCAPE_RAD
         escape_mods = torch.zeros(NUM_POSES, 2)
-        escape_mods[ASCENDING_REAR_IDX] = torch.tensor([-0.3, 0.5])  # paper's one given example
-        self.escape_mods = nn.Parameter(escape_mods)
+        for pose_name, (front_rad, rear_rad) in escape_table.items():
+            escape_mods[POSE_NAMES.index(pose_name)] = torch.tensor([front_rad, rear_rad])
+        self.register_buffer("escape_mods", escape_mods)
 
     def forward(self, p_t: torch.Tensor, roll: torch.Tensor, roll_rate: torch.Tensor,
                 fwd_vel_actual: torch.Tensor, v_cmd: float) -> torch.Tensor:
         temp_2 = p_t @ self.pose_commands  # (N, 2): [front, rear]
         a_temp = torch.stack([temp_2[..., 0], temp_2[..., 0], temp_2[..., 1], temp_2[..., 1]], dim=-1)  # (N,4)
 
-        x = roll.squeeze(-1) * self.kp - roll_rate.squeeze(-1) * self.kd  # (N,)
-        a_stab = torch.stack([-x, x, -x, x], dim=-1)  # (N,4): [FL,FR,RL,RR]
+        # Eq. 7/8 are computed in raw radians (matching the paper's and the reference
+        # controller's own units -- see DEFAULT_KP_RAD/DEFAULT_ESCAPE_RAD), then converted to
+        # the normalized delta they correspond to by dividing by each group's half-range --
+        # the same affine map pose_commands used above, applied to a delta rather than an
+        # absolute target so there is no low/high offset, just a scale.
+        x_rad = roll.squeeze(-1) * self.kp - roll_rate.squeeze(-1) * self.kd  # (N,), raw rad
+        x_front = x_rad / self._front_half_range
+        x_rear = x_rad / self._rear_half_range
+        # Rear joints are mounted mirrored front-to-back (marv.xacro's flipper_j reflect_x=-1),
+        # so the same world-frame roll correction that raises a front corner at "+x" lowers a
+        # rear corner at "+x" -- rl/rr take the opposite sign from fl/fr for the same physical
+        # response. Confirmed live 2026-08-16: with matching signs the rear pair drove to
+        # opposite clamp limits while the front pair stayed symmetric and level.
+        a_stab = torch.stack([-x_front, x_front, x_rear, -x_rear], dim=-1)  # (N,4): [FL,FR,RL,RR]
 
         st = torch.clamp((v_cmd - fwd_vel_actual.squeeze(-1)) / max(v_cmd, 1e-6), 0.0, 1.0)  # (N,)
-        em_2 = p_t @ self.escape_mods  # (N, 2): [front_mod, rear_mod]
-        a_em = torch.stack([em_2[..., 0], em_2[..., 0], em_2[..., 1], em_2[..., 1]], dim=-1) * st.unsqueeze(-1)
+        em_2_rad = p_t @ self.escape_mods  # (N, 2): [front_mod, rear_mod], raw rad
+        em_front = em_2_rad[..., 0] / self._front_half_range
+        em_rear = em_2_rad[..., 1] / self._rear_half_range
+        a_em = torch.stack([em_front, em_front, em_rear, em_rear], dim=-1) * st.unsqueeze(-1)
 
         return a_temp + a_stab + a_em  # (N, 4), Eq. 9
 
@@ -204,13 +308,15 @@ class HFCActorNet(nn.Module):
 
     def __init__(self, num_envs: int, track_vel: float, init_log_std: float, front_up_deg: float,
                  front_down_deg: float, back_up_deg: float, back_down_deg: float,
-                 hm_hidden: int, hm_out: int, fusion_hidden: int, head_hidden: int):
+                 hm_hidden: int, hm_out: int, fusion_hidden: int, head_hidden: int,
+                 below_body_extra_deg: float = 10.0, kp: float = DEFAULT_KP_RAD, kd: float = DEFAULT_KD_RAD):
         super().__init__()
         self.track_vel = track_vel
         self.encoder = HFCTerrainStateEncoder(hm_hidden=hm_hidden, hm_out=hm_out, fusion_hidden=fusion_hidden)
         self.transitions = HFCTransitionHeads(in_dim=self.encoder.output_dim, hidden_dim=head_hidden)
         self.belief = HFCSDSMBelief(num_envs=num_envs)
-        self.decoder = HFCActionDecoder(front_up_deg, front_down_deg, back_up_deg, back_down_deg)
+        self.decoder = HFCActionDecoder(front_up_deg, front_down_deg, back_up_deg, back_down_deg,
+                                        below_body_extra_deg=below_body_extra_deg, kp=kp, kd=kd)
         self.log_std = nn.Parameter(torch.full((6,), float(init_log_std)))
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -260,12 +366,16 @@ class HFCPolicyConfig(PolicyConfig):
     2022 — see hfc_policy.py's module-level docstrings for the full design rationale
     (SDSM belief propagation, Eq. 7/8/9 decode, why loc is atanh'd, why the belief buffer
     is non-persistent). Trained via train_ftr.py (PPO) using HFCModule's reward, which is
-    an intentional copy of marv_rl's reward formula (see hfc_module.py) — per the user's
-    explicit decision to train the whole controller (classifier + stabilization gains +
-    escape-maneuver magnitudes) via RL rather than the paper's imitation learning.
+    an intentional copy of marv_rl's reward formula (see hfc_module.py). kp/kd/escape_mods
+    are fixed constants now (DEFAULT_KP_RAD/DEFAULT_KD_RAD/DEFAULT_ESCAPE_RAD), not trained —
+    an earlier version of this project trained the whole controller (classifier + kp/kd +
+    escape magnitudes) via PPO instead of the paper's imitation learning; that did not work
+    out and has been dropped in favor of rl_modules.hfcil (IL for the classifier only, the
+    decoder fixed as in the paper/reference).
 
     front_up_deg/front_down_deg/back_up_deg/back_down_deg must match
-    env_cfg_overrides.marv_flipper_*_deg. track_vel must match
+    env_cfg_overrides.marv_flipper_*_deg — defaults here are MARV's actual real-robot flipper
+    limits (60/80/60/80), not a generic placeholder. track_vel must match
     env_cfg_overrides.fixed_forward_vel (the env forces this regardless of the policy's
     own v output — see HFCActorNet's docstring).
     """
@@ -274,10 +384,17 @@ class HFCPolicyConfig(PolicyConfig):
     value_optimizer_opts: dict[str, Any]
     track_vel: float = 0.4
     init_log_std: float = -1.0
-    front_up_deg: float = 90.0
-    front_down_deg: float = 90.0
-    back_up_deg: float = 90.0
-    back_down_deg: float = 90.0
+    front_up_deg: float = 60.0
+    front_down_deg: float = 80.0
+    back_up_deg: float = 60.0
+    back_down_deg: float = 80.0
+    # Extra downward deflection (deg) for flippers a pose puts BELOW the body, raising the
+    # chassis. See HFCActionDecoder.__init__; 0.0 reproduces the reference repo's templates.
+    below_body_extra_deg: float = 10.0
+    # Fixed roll-stabilization gains / escape-maneuver magnitudes (Eq. 7/8) — see
+    # DEFAULT_KP_RAD/DEFAULT_KD_RAD's module-level comment for units and provenance.
+    kp: float = DEFAULT_KP_RAD
+    kd: float = DEFAULT_KD_RAD
     hm_hidden: int = 32
     hm_out: int = 4
     fusion_hidden: int = 32
@@ -294,7 +411,8 @@ class HFCPolicyConfig(PolicyConfig):
             front_up_deg=self.front_up_deg, front_down_deg=self.front_down_deg,
             back_up_deg=self.back_up_deg, back_down_deg=self.back_down_deg,
             hm_hidden=self.hm_hidden, hm_out=self.hm_out, fusion_hidden=self.fusion_hidden,
-            head_hidden=self.head_hidden,
+            head_hidden=self.head_hidden, below_body_extra_deg=self.below_body_extra_deg,
+            kp=self.kp, kd=self.kd,
         )
         actor_module = TensorDictModule(actor_net, in_keys=[OBS_KEY], out_keys=["loc", "scale"])
         policy_operator = ProbabilisticActor(
