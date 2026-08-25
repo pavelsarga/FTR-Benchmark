@@ -2,7 +2,28 @@
 # belong in the standard training config (configs/).
 
 # Row index into env.current_frame_height_maps (shape (N, 45, 21), cell_size=0.05m) used
-# as "terrain height ahead of the robot". Center row is height_map_size[0]//2 = 22;
-# height_ahead_row=18 is 4 rows forward of center (4*0.05m = 0.20m), matching the paper's
-# "height of the terrain approximately 20cm in front of the robot body".
-height_ahead_row: 18
+# as "terrain height ahead of the robot". Center row is height_map_size[0]//2 = 22.
+#
+# The paper (Pecka et al. 2016, Sec. IV-A) defines this as "height of the terrain
+# approximately 20cm in front of the robot BODY" -- but env.positions (what
+# current_frame_height_maps is actually cropped around) is the robot's CENTER, not
+# its body, and for MARV the FRONT FLIPPER TIP in its flat pose (angle=0) extends
+# well past the chassis deck -- so this is set to sample right at that tip, not the
+# paper's extra 20cm beyond a generic "body".
+#
+# From marv_sim.urdf: front_left_flipper_j pivot is 0.256m ahead of base_link, and
+# the flipper's own end point is a further 0.3815m out along its flat-pose axis ->
+# 0.256 + 0.3815 = 0.6375m tip reach ahead of base_link.
+# row = 22 - round(0.6375 / 0.05) = 22 - 13 = 9.
+#
+# (height_ahead_row history: 18 -- 0.20m from CENTER, landed under the chassis deck;
+# 13 -- 0.20m from the front AXLE (robot_wheel_base_length/2), still short of the
+# flipper tips; 5 -- flipper tip + the paper's 0.20m margin beyond it, i.e. ahead of
+# where an obstacle would first contact the flipper; settled on 9 -- AT the tip.)
+#
+# NOTE: this changes the observation a trained policy was fit against. Any
+# checkpoint trained with a previous height_ahead_row (18, 13, or 5 -- e.g.
+# creps_state_final.pth in rl_baselines/creps) is now stale and must be retrained
+# against this new sample point -- deploying an old checkpoint with this new row
+# will feed it an observation it never saw in training.
+height_ahead_row: 9

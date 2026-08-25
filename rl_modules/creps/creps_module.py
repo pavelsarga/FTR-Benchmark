@@ -52,9 +52,12 @@ class CREPSModule(RLModule):
 
         # height_ahead: current_frame_height_maps is (N, 45, 21), cell_size=0.05m; after
         # ftr_env.py's calc_current_frame_height_maps() .flip(0), row index decreases
-        # toward the front of the robot. Center = (height_map_size[0]//2, [1]//2); row
-        # cfg.height_ahead_row (default 18) is height_map_size[0]//2 - 4 rows = 4*0.05m =
-        # 0.20m ahead of the robot, matching the paper's "~20cm in front of the robot".
+        # toward the front of the robot. Center = (height_map_size[0]//2, [1]//2) =
+        # env.positions (base_link), NOT the front of the physical body. row
+        # cfg.height_ahead_row (default 9, creps_module.yaml) is the front flipper
+        # tip's flat-pose reach (0.6375m) ahead of base_link -- sampling right at the
+        # tip, i.e. what the flippers would actually contact first -- see
+        # creps_module.yaml's comment for the derivation/history.
         row = self.cfg.height_ahead_row
         col = env.height_map_size[1] // 2
         ground_ahead = env.current_frame_height_maps[:, row, col]
