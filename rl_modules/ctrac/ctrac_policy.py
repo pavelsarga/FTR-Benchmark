@@ -104,10 +104,27 @@ class CTRACActorNet(nn.Module):
         )
         self.w_log_std = float(w_log_std)
 
-    def forward(self, obs: torch.Tensor):
+    def forward(self, obs: torch.Tensor, obs_history: "torch.Tensor | None" = None):
+        """obs_history: the REAL (N, H, PARTIAL_DIM) window for these observations, when the
+        caller has it. Supplied from the replay buffer during SAC updates; None during live
+        collection, where the ring buffer is the only source and is correct.
+
+        Passing it matters. CTRACObsHistory's ring buffer is indexed by env and is only
+        valid for the live rollout: on an off-policy minibatch (batch_size 256 vs
+        num_robots 512) its shape guard fires and it falls back to the current frame
+        repeated H times. The C-VAE would then be handed a CONSTANT history during every
+        actor gradient step while seeing a genuine temporal window at rollout — so z, the
+        one input the whole contact-estimation architecture exists to produce, was computed
+        from an input distribution the actor never actually encounters. Verified directly:
+        a 256-row minibatch came back as [99,99,99,99,99,99,99,99] where the live rollout
+        gives [0,1,2,...,7].
+        """
         partial = obs[..., :PARTIAL_DIM]
         fresh_mask = partial[..., -1:]  # reset flag is the last partial column
-        obs_hist = self.obs_history(partial, fresh_mask)  # (N, H, PARTIAL_DIM)
+        if obs_history is not None:
+            obs_hist = obs_history
+        else:
+            obs_hist = self.obs_history(partial, fresh_mask)  # (N, H, PARTIAL_DIM)
         z, _mu, _logvar, contact, prob, _recon = self.cvae(obs_hist, sample=self.training)
 
         o_t = partial[..., :-1]  # drop reset flag before feeding the actor trunk
@@ -137,6 +154,33 @@ class CTRACQNet(nn.Module):
 
     def forward(self, obs: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         return self.mlp(torch.cat([obs, action], dim=-1))
+
+
+class _CTRACActorTDModule(TensorDictModule):
+    """Passes "obs_history" into CTRACActorNet when the input tensordict has it.
+
+    A plain TensorDictModule has a fixed in_keys list, but this key's availability is
+    genuinely conditional: during live collection the actor PRODUCES "obs_history" (it does
+    not exist yet when the actor is called), while a replay minibatch already CARRIES it.
+    Declaring it as a hard in_key would break collection; omitting it entirely is the bug
+    described in CTRACActorNet.forward. So the presence check is the contract, not a
+    shortcut.
+
+    SACLoss also evaluates the actor on the "next" sub-tensordict to build the target
+    action; train_sac.py stores ("next", "obs_history") so that call gets a real window too.
+    """
+
+    def __init__(self, actor_net):
+        super().__init__(actor_net, in_keys=[OBS_KEY], out_keys=["loc", "scale", "obs_history"])
+
+    def forward(self, tensordict, *args, **kwargs):
+        obs = tensordict.get(OBS_KEY)
+        hist = tensordict.get("obs_history", None)
+        loc, scale, out_hist = self.module(obs, obs_history=hist)
+        tensordict.set("loc", loc)
+        tensordict.set("scale", scale)
+        tensordict.set("obs_history", out_hist if hist is None else hist)
+        return tensordict
 
 
 @dataclass
@@ -186,7 +230,7 @@ class CTRACPolicyConfig(PolicyConfig):
                 _log.warning(f"C-VAE unexpected keys: {missing_unexpected.unexpected_keys}")
 
         actor_net = CTRACActorNet(num_envs=num_envs, cvae=cvae, hidden_dims=self.actor_hidden, w_log_std=self.w_log_std)
-        actor_module = TensorDictModule(actor_net, in_keys=[OBS_KEY], out_keys=["loc", "scale", "obs_history"])
+        actor_module = _CTRACActorTDModule(actor_net)
         policy_operator = ProbabilisticActor(
             module=actor_module,
             spec=action_spec,

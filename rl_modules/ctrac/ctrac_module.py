@@ -48,11 +48,25 @@ def _crop_and_pad(raw: torch.Tensor, x_lo: float, x_hi: float, y_lo: float, y_hi
     under the robot, same convention crossing_env.py's ground_height lookup uses) to the
     requested robot-frame x/y range, edge-replicate-padding past the grid's own coverage.
     Always returns exactly (N, target_rows, target_cols).
+
+    ROW INDEX DECREASES TOWARD THE FRONT. ftr_env.calc_current_frame_height_maps() stores
+    `local_map.flip(0)`, so row r sits at x = (center_row - r) * _HM_CELL — row 0 is the
+    frontmost strip, not the rearmost. creps_module.py's height_ahead_row relies on the same
+    convention ("row index decreases toward the front of the robot").
+
+    This was originally written as `row_lo = center_row + round(x_lo / _HM_CELL)`, i.e.
+    assuming row index grows forward. That silently sampled the MIRROR of every requested
+    range: the paper's local map at x in [+0.4, +1.0] m ahead came out as rows 30..42, which
+    is x in [-0.375, -0.975] m — behind the robot. The policy was blind to whatever it was
+    about to drive onto and instead saw what it had already crossed, on both the actor's
+    local map and the critic's privileged map.
     """
     n, h, w = raw.shape
     center_row, center_col = h // 2, w // 2
-    row_lo = center_row + round(x_lo / _HM_CELL)
-    row_hi = row_lo + target_rows
+    # Front-to-back output ordering (row 0 of the crop = furthest ahead), matching the
+    # source grid's own orientation so the two stay consistent.
+    row_lo = center_row - round(x_hi / _HM_CELL)
+    row_hi = center_row - round(x_lo / _HM_CELL)
     col_lo = center_col + round(y_lo / _HM_CELL)
     col_hi = col_lo + target_cols
 
@@ -226,7 +240,39 @@ class CTRACModule(RLModule):
         total_dist = (env.target_positions[:, :2] - env.start_positions[:, :2]).norm(dim=-1).clamp_min(1e-3)
         dist_to_goal = (env.target_positions[:, :2] - env.positions[:, :2]).norm(dim=-1)
         progress_frac = (1.0 - dist_to_goal / total_dist).clamp(0.0, 1.0)
-        components["progress"] = progress_frac - 1.0
+        components["progress"] = mcfg.progress_weight * (progress_frac - 1.0)
+
+        # Goal-approach velocity — this project's addition, not in the paper.
+        #
+        # "progress" above rewards CLOSENESS, not the RATE of approach: moving 0.03 m on an
+        # ~8 m lane changes it by ~0.004, which is invisible next to the other per-step terms.
+        # Nothing else in Eq. 4-8 pays for speed either, and the measured consequence is that
+        # the policy gets steadily SLOWER as it trains — lin_vel_mean fell 0.327 -> 0.184 m/s
+        # on run 11365624 and 0.334 -> 0.258 m/s on 11369835, while dist_to_goal plateaued
+        # around 4.9 m. At 0.26 m/s a 30 s episode covers ~7.8 m, so the robot is right at the
+        # edge of being unable to finish at all, and the lanes still stuck at 0.000 success are
+        # exactly the ones needing committed forward drive to mount an obstacle.
+        #
+        # Signed projection of world-frame linear velocity onto the goal direction, so only NET
+        # approach counts: driving fast in a circle, or oscillating toward and away, nets ~0
+        # rather than farming reward the way a raw |v| term would. Backing up is penalised but
+        # bounded at -1, leaving room for the reposition-then-climb manoeuvre.
+        # env.robot_lin_velocities is root_lin_vel_b — BODY frame (IsaacLab's _b suffix) — so
+        # the goal direction has to be de-rotated into the body frame before projecting, the
+        # same yaw-only rotation get_observations() applies to goal_world above. Projecting a
+        # body-frame velocity onto a world-frame direction would silently make this term a
+        # function of heading rather than of approach speed.
+        goal_w = env.target_positions[:, :2] - env.positions[:, :2]
+        yaw = env.orientations_3[:, 2]
+        cos_y, sin_y = torch.cos(yaw), torch.sin(yaw)
+        goal_bx = cos_y * goal_w[:, 0] + sin_y * goal_w[:, 1]
+        goal_by = -sin_y * goal_w[:, 0] + cos_y * goal_w[:, 1]
+        goal_b = torch.stack([goal_bx, goal_by], dim=-1)
+        dir_to_goal = goal_b / goal_b.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        v_toward = (env.robot_lin_velocities[:, :2] * dir_to_goal).sum(dim=-1)  # m/s, signed
+        components["goal_velocity"] = mcfg.goal_velocity_weight * (
+            v_toward / mcfg.goal_velocity_ref
+        ).clamp(-1.0, 1.0)
 
         # Posture swing (Eq. 5-6)
         self._update_swing_hist()
@@ -234,13 +280,19 @@ class CTRACModule(RLModule):
         bmax_roll_rad = torch.deg2rad(torch.tensor(float(mcfg.swing_bmax_roll_deg))).item()
         rs_pitch = self._swing_penalty(self._pitch_hist, bmax_pitch_rad)
         rs_roll = self._swing_penalty(self._roll_hist, bmax_roll_rad)
-        components["posture_swing"] = mcfg.swing_alpha_pitch * rs_pitch + mcfg.swing_alpha_roll * rs_roll
+        components["posture_swing"] = mcfg.posture_swing_weight * (
+            mcfg.swing_alpha_pitch * rs_pitch + mcfg.swing_alpha_roll * rs_roll
+        )
 
         # Stabilization (Eq. 7) — ground-truth contact points, not the C-VAE's estimate
         # (matching the paper: c_t is privileged state used directly for reward; only the
         # *estimated* c-tilde_t reaches the actor, via ctrac_policy.py).
+        # Recomputed here rather than reusing get_observations()'s value: IsaacLab's
+        # DirectRLEnv.step calls _get_rewards() (line 340) BEFORE _get_observations()
+        # (line 356), so a cache filled by get_observations would hand this the PREVIOUS
+        # step's contacts. The duplicate ContactSensor read is the cheap, correct option.
         contact_points, contact_prob = self._contact_extractor.compute()
-        components["stabilization"] = self._stabilization_penalty(contact_points, contact_prob)
+        components["stabilization"] = mcfg.stabilization_weight * self._stabilization_penalty(contact_points, contact_prob)
 
         # ------------------------------------------------------------------
         # Step penalty & terminal masking/bonus — same convention every other module uses.

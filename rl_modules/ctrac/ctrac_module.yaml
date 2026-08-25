@@ -24,3 +24,40 @@ nesm_char_length: 0.3
 # (Newtons) counts a wheel as "in contact" for both the reward's NESM term and the C-VAE's
 # supervised targets.
 contact_force_threshold: 1.0
+
+# ---- Per-component reward weights (this project's addition; the paper sums Eq. 4-7 with
+# implicit weight 1). crossing_env._get_rewards sums whatever get_reward_components returns
+# with no weighting of its own, so scaling has to happen here.
+#
+# Why stabilization is down-weighted: measured on run 11365624 at 28M frames the components
+# were progress -0.748, stabilization -0.520, posture_swing -0.017, i.e. the stability margin
+# was 37% of the total per-step penalty. It is a STATIC stability margin, so it is maximised
+# by parking flat and is minimised by exactly the manoeuvre the task requires (pitching up
+# onto an obstacle) — over 28M frames the policy converged to creeping slowly across easy
+# terrain with rollover/out_of_range/shock_high all identically 0.000 and 12 of 17 obstacle
+# lanes at exactly 0.000 success. Summed over a 300-step episode, -0.52/step is ~-156, about
+# the same magnitude as the +150 for actually reaching the goal: staying comfortable paid as
+# well as succeeding. 0.3 keeps the term meaningful as a tipover deterrent without letting it
+# out-bid the task.
+#
+# posture_swing is left at 1.0: it was already only -0.017/step, so it is not what is
+# suppressing the climb. progress is left at 1.0 — it is the term that actually drives
+# goal-seeking, and raising the others' cost relative to it is the whole point.
+progress_weight: 1.0
+posture_swing_weight: 1.0
+stabilization_weight: 0.3
+
+# ---- Goal-approach velocity (see ctrac_module.py's goal_velocity block) ----
+# reward = weight * clamp(v_toward_goal / ref, -1, 1), added because nothing in the paper's
+# Eq. 4-8 pays for SPEED and the policy was measurably slowing down as it trained.
+#
+# ref 0.4 m/s: comfortably above the 0.26-0.33 m/s the policy actually achieves, so the term
+# is still climbing (not saturated) across the whole operating range, but low enough that the
+# reward saturates before speeds that would fight the stability terms.
+# weight 0.5: at the current ~0.26 m/s this contributes ~+0.33/step, and closing the gap to
+# ref is worth ~+0.17/step more — roughly +52 over a 300-step episode, i.e. a third of the
+# +150 goal bonus, so speed matters without drowning out reaching the goal. It is also the
+# first POSITIVE dense term in this reward, which deliberately breaks the all-negative regime
+# where every action was merely less bad than another.
+goal_velocity_weight: 0.5
+goal_velocity_ref: 0.4
