@@ -34,6 +34,11 @@ from ftr_envs.utils.torch import add_noise, rand_range
 
 _log = logging.getLogger(__name__)
 
+# Modules whose rewards read real per-flipper PhysX contact forces
+# (rl_modules/ctrac/ctrac_contact.py). MARV-only — see the ContactSensor block in
+# _setup_scene for why.
+_CONTACT_SENSOR_MODULES = ("ctrac", "atd3qn", "icmd3qn")
+
 
 def to_numpy(data):
     if isinstance(data, np.ndarray):
@@ -359,6 +364,14 @@ class FtrEnv(DirectRLEnv):
         else:
             if self.cfg.fixed_forward_vel is not None:
                 track_v = torch.full((self.num_envs, 1), self.cfg.fixed_forward_vel, device=self.device)
+                # _pre_physics_step stores the policy's raw action in last_action, but
+                # this override discards it, so a
+                # module that feeds last_action back as an observation (marv_rl_module.py's
+                # 6-D "prev action [v, w, fl x 4]" tail — the only consumer of the v/w slots;
+                # train_creps.py reads last_action[:, 2:] only) would be told the robot
+                # executed a velocity it never executed. Write what was actually applied.
+                if self.last_action.shape[1] > 0:
+                    self.last_action[:, 0] = self.cfg.fixed_forward_vel
             else:
                 track_v = self.actions[:, 0:1].clamp(-self.track_vel_max, self.track_vel_max)
             track_w = self.actions[:, 1:2].clamp(-self.track_ang_vel_max, self.track_ang_vel_max)
@@ -412,25 +425,32 @@ class FtrEnv(DirectRLEnv):
             robot_cfg = self.cfg.robot
             RobotClass = FtrWheelArticulation
 
-        if getattr(self.cfg, "module_name", None) == "ctrac":
-            if self.cfg.robot_type != "marv":
-                raise NotImplementedError(
-                    "ctrac module requires robot_type: marv (its ContactSensorCfg wiring "
-                    "targets MarvWheelArticulation's wheel-body prim layout only)."
-                )
-            # PhysX only reports contacts for bodies that have the contact-reporter API
-            # attached, which IsaacLab only adds at spawn time when this flag is set — no
-            # other module in this project uses ContactSensor, so it was never turned on.
-            # Without it, ContactSensor._initialize_impl() raises "could not find any
-            # bodies with contact reporter API" even though the prims/body names match the
-            # sensor's regex fine (confirmed against a real cluster run — the sensor's own
-            # find_bodies() failure two lines below was a downstream symptom of this, not a
-            # separate bug: body_physx_view stays None because _initialize_impl() never
-            # completed). Lives directly on the spawn cfg (RigidObjectSpawnerCfg, e.g.
-            # UsdFileCfg) — a SIBLING of rigid_props/articulation_props, not nested inside
-            # either. Must be set before RobotClass(...) actually spawns the prims.
-            if self.cfg.ctrac_contact_sensor_enabled:
-                robot_cfg.spawn.activate_contact_sensors = True
+        if getattr(self.cfg, "module_name", None) == "ctrac" and self.cfg.robot_type != "marv":
+            # Hard error for ctrac only: contact points are load-bearing there (C-VAE
+            # regression target + privileged critic input). atd3qn/icmd3qn merely prefer
+            # real contacts for R_contact and fall back to the joint-torque proxy.
+            raise NotImplementedError(
+                "ctrac module requires robot_type: marv (its ContactSensorCfg wiring "
+                "targets MarvWheelArticulation's wheel-body prim layout only)."
+            )
+
+        # PhysX only reports contacts for bodies that have the contact-reporter API
+        # attached, which IsaacLab only adds at spawn time when this flag is set. Without
+        # it, ContactSensor._initialize_impl() raises "could not find any bodies with
+        # contact reporter API" even though the prims/body names match the sensor's regex
+        # fine (confirmed against a real cluster run — the sensor's own find_bodies()
+        # failure further below was a downstream symptom of this, not a separate bug:
+        # body_physx_view stays None because _initialize_impl() never completed). Lives
+        # directly on the spawn cfg (RigidObjectSpawnerCfg, e.g. UsdFileCfg) — a SIBLING of
+        # rigid_props/articulation_props, not nested inside either. Must be set before
+        # RobotClass(...) actually spawns the prims.
+        _wants_contacts = (
+            getattr(self.cfg, "module_name", None) in _CONTACT_SENSOR_MODULES
+            and self.cfg.robot_type == "marv"
+            and self.cfg.ctrac_contact_sensor_enabled
+        )
+        if _wants_contacts:
+            robot_cfg.spawn.activate_contact_sensors = True
 
         self._robot = RobotClass(robot_cfg, device=self.device)
         self._robot.set_robot_env(self.cfg.robot_config, self.cfg.robot_render_config)
@@ -446,7 +466,11 @@ class FtrEnv(DirectRLEnv):
         # compare MarvWheelArticulation.set_robot_env's sibling-of-container wheel bodies
         # vs FtrWheelArticulation's nested flipper_list/<side>_wheel/<code>{i} layout).
         # robot_type is already validated above (before activate_contact_sensors was set).
-        if getattr(self.cfg, "module_name", None) == "ctrac" and self.cfg.ctrac_contact_sensor_enabled:
+        # atd3qn/icmd3qn use the same extractor for their R_contact term, which on MARV asks
+        # "is each flipper pair on the ground" (see rl_modules/pan_shared.py) — a question
+        # only real contact forces answer well; they degrade to the joint-torque proxy if the
+        # sensor is missing.
+        if _wants_contacts:
             from omni.isaac.lab.sensors import ContactSensor, ContactSensorCfg
 
             wheel_names_regex = "(" + "|".join(
@@ -603,42 +627,10 @@ class FtrEnv(DirectRLEnv):
                     torch.zeros(n, num_joints, device=self.device),
                     env_ids=bad_ids,
                 )
-        if self.cfg.flipper_pos_max_deg is not None or self.cfg.marv_flipper_front_up_deg is not None:
+        low, high = self.flipper_angle_bounds()
+        if low is not None:
             flipper_offset = 4 if self.cfg.flipper_style else 2
             flipper_cmd = self.actions[:, flipper_offset:]
-
-            # Per-flipper angle limits (radians), in flipper_target_pos convention. The same
-            # bounds are used to clamp the integrated angle (velocity mode) and to define the
-            # [-1, 1] → [low, high] target map (position mode).
-            marv_limits = (
-                self.cfg.marv_flipper_front_up_deg,
-                self.cfg.marv_flipper_front_down_deg,
-                self.cfg.marv_flipper_back_up_deg,
-                self.cfg.marv_flipper_back_down_deg,
-            )
-            if self.cfg.robot_type == "marv" and all(v is not None for v in marv_limits):
-                # Asymmetric per-pair limits for MARV: up = negative angle, down = positive
-                # angle for front; up = positive angle, down = negative angle for rear.
-                # The target's width/ordering depends on sync_flipper_control/only_front_flipper
-                # (see get_flipper_pos()) — mirror that same branching here so low/high always
-                # match the target's actual per-flipper layout.
-                front_up, front_down, back_up, back_down = (np.deg2rad(v) for v in marv_limits)
-                if self.sync_flipper_control and self.only_front_flipper:
-                    low_vals, high_vals = [-front_up], [front_down]
-                elif self.sync_flipper_control and not self.only_front_flipper:
-                    low_vals, high_vals = [-front_up, -back_down], [front_down, back_up]
-                elif not self.sync_flipper_control and self.only_front_flipper:
-                    low_vals, high_vals = [-front_up, -front_up], [front_down, front_down]
-                else:
-                    low_vals  = [-front_up,  -front_up,  -back_down, -back_down]
-                    high_vals = [ front_down,  front_down,  back_up,    back_up]
-                low  = torch.tensor(low_vals,  device=self.device, dtype=self.flipper_target_pos.dtype)
-                high = torch.tensor(high_vals, device=self.device, dtype=self.flipper_target_pos.dtype)
-            else:
-                # Symmetric limits: ±flipper_pos_max_deg for every flipper.
-                limit = np.deg2rad(self.cfg.flipper_pos_max_deg)
-                low  = torch.full((self.flipper_num,), -limit, device=self.device, dtype=self.flipper_target_pos.dtype)
-                high = torch.full((self.flipper_num,),  limit, device=self.device, dtype=self.flipper_target_pos.dtype)
 
             if self.cfg.flipper_control_mode == "position":
                 # Positional control: the policy outputs an absolute flipper target in
@@ -665,6 +657,53 @@ class FtrEnv(DirectRLEnv):
                 self.flipper_target_pos = torch.clamp(next_pos, low, high)
         else:
             self.flipper_target_pos.zero_()
+
+    def flipper_angle_bounds(self):
+        """Per-flipper angle limits (radians) in flipper_target_pos convention, as a
+        ``(low, high)`` pair of ``(flipper_num,)`` tensors — or ``(None, None)`` when the
+        flippers are locked horizontal.
+
+        The same bounds clamp the integrated angle (velocity/increment mode) and define the
+        [-1, 1] → [low, high] target map (position mode). Exposed as a method because the
+        reward/observation modules need it too: normalising a flipper angle by the symmetric
+        ``flipper_pos_max_deg`` is wrong whenever the asymmetric MARV limits are active
+        (front -90/+80, rear -80/+90 in the D3QN configs), which made the normalised feature
+        neither full-range nor centred on the flat pose. See rl_modules/pan_shared.py.
+        """
+        if self.cfg.flipper_pos_max_deg is None and self.cfg.marv_flipper_front_up_deg is None:
+            return None, None
+
+        marv_limits = (
+            self.cfg.marv_flipper_front_up_deg,
+            self.cfg.marv_flipper_front_down_deg,
+            self.cfg.marv_flipper_back_up_deg,
+            self.cfg.marv_flipper_back_down_deg,
+        )
+        dtype = self.flipper_target_pos.dtype
+        if self.cfg.robot_type == "marv" and all(v is not None for v in marv_limits):
+            # Asymmetric per-pair limits for MARV: up = negative angle, down = positive
+            # angle for front; up = positive angle, down = negative angle for rear.
+            # The target's width/ordering depends on sync_flipper_control/only_front_flipper
+            # (see get_flipper_pos()) — mirror that same branching here so low/high always
+            # match the target's actual per-flipper layout.
+            front_up, front_down, back_up, back_down = (np.deg2rad(v) for v in marv_limits)
+            if self.sync_flipper_control and self.only_front_flipper:
+                low_vals, high_vals = [-front_up], [front_down]
+            elif self.sync_flipper_control and not self.only_front_flipper:
+                low_vals, high_vals = [-front_up, -back_down], [front_down, back_up]
+            elif not self.sync_flipper_control and self.only_front_flipper:
+                low_vals, high_vals = [-front_up, -front_up], [front_down, front_down]
+            else:
+                low_vals  = [-front_up,  -front_up,  -back_down, -back_down]
+                high_vals = [ front_down,  front_down,  back_up,    back_up]
+            low  = torch.tensor(low_vals,  device=self.device, dtype=dtype)
+            high = torch.tensor(high_vals, device=self.device, dtype=dtype)
+        else:
+            # Symmetric limits: ±flipper_pos_max_deg for every flipper.
+            limit = np.deg2rad(self.cfg.flipper_pos_max_deg)
+            low  = torch.full((self.flipper_num,), -limit, device=self.device, dtype=dtype)
+            high = torch.full((self.flipper_num,),  limit, device=self.device, dtype=dtype)
+        return low, high
 
     def _post_physics_step(self):
         self.positions[:] = self._robot.data.root_pos_w
