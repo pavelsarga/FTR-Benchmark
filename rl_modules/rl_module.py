@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import einops
@@ -20,6 +21,35 @@ class RLModule:
 
     def __init__(self, env: "FtrEnv") -> None:
         self.env = env
+
+    def load_module_cfg(self, path):
+        """Load this module's own YAML and merge ``env.cfg.module_cfg_overrides`` over it.
+
+        Each reproduction keeps its paper constants (and, where the target robot differs
+        from the paper's, its adaptation switches) in ``rl_modules/<name>/<name>_module.yaml``
+        rather than in ``configs/``, because they belong to the reproduction and not to a
+        training run. This hook lets a training config vary them per experiment — e.g. run
+        the paper-faithful reward semantics and the MARV-adapted ones as two configs —
+        without editing a file inside the module.
+
+        Unknown keys raise instead of being silently ignored: a typo'd switch would
+        otherwise leave the run quietly on the default and produce a result attributed to
+        the wrong condition.
+        """
+        from omegaconf import OmegaConf
+
+        cfg = OmegaConf.load(path)
+        overrides = dict(getattr(self.env.cfg, "module_cfg_overrides", None) or {})
+        if not overrides:
+            return cfg
+
+        unknown = sorted(set(overrides) - set(cfg.keys()))
+        if unknown:
+            raise ValueError(
+                f"module_cfg_overrides for {type(self).__name__} names unknown key(s) "
+                f"{unknown}; {Path(path).name} defines {sorted(cfg.keys())}."
+            )
+        return OmegaConf.merge(cfg, OmegaConf.create(overrides))
 
     def get_observations(self) -> VecEnvObs:
         raise NotImplementedError

@@ -64,6 +64,14 @@ class CrossingEnvCfg(FtrEnvCfg):
     # Selects the RLModule implementation from RLMODULE_REGISTRY (see rl_modules/registry.py).
     module_name: str = "marv_rl"
 
+    # Per-key overrides merged over the active module's own YAML (rl_modules/<name>/
+    # <name>_module.yaml) by RLModule.load_module_cfg. Those YAMLs hold each reproduction's
+    # paper constants and its adaptation switches, and they live next to the module rather
+    # than in configs/ — so without this a training config could not run, say, the
+    # paper-faithful reward semantics and the MARV-adapted ones as two experiments without
+    # editing a file inside the module. Unknown keys are rejected rather than ignored.
+    module_cfg_overrides = {}
+
     # Shock penalty — penalises linear acceleration magnitude using a deadzone formulation.
     # shock_coef < 0 → penalty; None → disabled.
     # shock_threshold: accelerations below this (m/s²) are ignored — covers normal locomotion.
@@ -269,6 +277,14 @@ class CrossingEnv(FtrEnv):
 
         reward_info["rew/total_reward"] = reward.mean().item()
 
+        # Module-supplied diagnostics (optional). The Pan reproductions (atd3qn/icmd3qn)
+        # publish their candidate flipper angles, angle deltas and per-end contact flags
+        # here — those quantities encode every frame/sign assumption in
+        # rl_modules/pan_shared.py, so a short debug run makes each of them directly
+        # checkable instead of only observable through the success curve.
+        for name, value in getattr(self.rl_module, "pan_diagnostics", {}).items():
+            reward_info[f"pan/{name}"] = _hmean(value)
+
         # ------------------------------------------------------------------
         # 2. State monitoring (always logged, regardless of which components are enabled).
         # ------------------------------------------------------------------
@@ -330,6 +346,27 @@ class CrossingEnv(FtrEnv):
         reward_info["state/ang_velocity"] = av_mean
         reward_info["state/ang_velocity_max"] = av_max
         reward_info["state/ang_velocity_min"] = av_min
+
+        # ── Heading group ─────────────────────────────────────────────────
+        # Duplicated from the extras["state_stats"] block further down on purpose: that
+        # dict is only surfaced by the TRAINERS (pop_state_stats), while eval_ftr.py prints
+        # reward_info. Anything needed to debug steering has to live here or it is invisible
+        # in exactly the runs used to test steering.
+        # Body frame throughout (robot_ang_velocities is root_ang_vel_b), so [:, 2] is the
+        # yaw rate directly; only the goal bearing needs de-rotating.
+        _gw = self.target_positions[:, :2] - self.positions[:, :2]
+        _yaw = self.orientations_3[:, 2]
+        _cy, _sy = torch.cos(_yaw), torch.sin(_yaw)
+        _herr = torch.atan2(-_sy * _gw[:, 0] + _cy * _gw[:, 1],
+                            _cy * _gw[:, 0] + _sy * _gw[:, 1])
+        he_mean, he_max, he_min = _hstats(torch.rad2deg(_herr))
+        reward_info["state/heading_err_deg"] = he_mean
+        reward_info["state/heading_err_deg_max"] = he_max
+        reward_info["state/heading_err_deg_min"] = he_min
+        yr_mean, yr_max, yr_min = _hstats(self.robot_ang_velocities[:, 2])
+        reward_info["state/yaw_rate"] = yr_mean
+        reward_info["state/yaw_rate_max"] = yr_max
+        reward_info["state/yaw_rate_min"] = yr_min
 
         # Roll and pitch angles
         roll_mean, roll_max, roll_min = _hstats(self.orientations_3[:, 0])
@@ -468,6 +505,38 @@ class CrossingEnv(FtrEnv):
                 healthy, self.height_map_size[0] // 2, self.height_map_size[1] // 2
             ]
             h_clearance = (self.positions[healthy, 2] - self.track_wheel_radius) - ground_h
+
+            # --- Directional breakdown -------------------------------------------------
+            # ang_vel_mean above is the 3-D norm, which conflates pitch rate (large and
+            # expected while climbing) with yaw rate (uncommanded heading drift, and the
+            # thing that actually costs goal progress). Split them, and measure heading
+            # error and approach speed directly rather than leaving them to be back-computed
+            # from a reward term. Both velocity buffers are BODY frame (ftr_env.py sets them
+            # from root_lin_vel_b / root_ang_vel_b), so ang[:, 2] is the yaw rate and
+            # lin[:, 1] is lateral slip, with no rotation needed. Body-frame w_z is only an
+            # approximation of the world yaw rate once the robot is pitched, which is fine
+            # at the few-degree mean pitch seen here and conservative at larger ones.
+            h_ang_xyz = self.robot_ang_velocities[healthy]     # [roll_rate, pitch_rate, yaw_rate]
+            h_lin_xyz = self.robot_lin_velocities[healthy]     # [forward, lateral, vertical]
+
+            # Goal direction de-rotated into the body frame, same yaw-only convention as
+            # ctrac_module.py's goal_xy / goal_velocity and ctrac_contact.py's contact points.
+            g_w = self.target_positions[healthy, :2] - self.positions[healthy, :2]
+            h_yaw = self.orientations_3[healthy, 2]
+            cos_y, sin_y = torch.cos(h_yaw), torch.sin(h_yaw)
+            g_bx = cos_y * g_w[:, 0] + sin_y * g_w[:, 1]
+            g_by = -sin_y * g_w[:, 0] + cos_y * g_w[:, 1]
+            # 0 = nose pointing straight at the goal; sign follows the body y axis (left +).
+            heading_err = torch.atan2(g_by, g_bx)
+            g_b = torch.stack([g_bx, g_by], dim=-1)
+            dir_to_goal = g_b / g_b.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+            v_toward = (h_lin_xyz[:, :2] * dir_to_goal).sum(dim=-1)   # m/s, signed
+
+            # Fraction of the speed the robot actually has that is net approach. Only defined
+            # for robots that are moving — including stationary ones would divide ~0 by ~0 and
+            # swamp the mean with noise, so they are excluded rather than counted as 0.
+            moving = h_lin > 0.02
+            approach_frac = (v_toward[moving] / h_lin[moving]).mean().item() if moving.any() else 0.0
             self.extras["state_stats"].update({
                 "state/lin_vel_mean":    h_lin.mean().item(),
                 "state/lin_vel_max":     h_lin.max().item(),
@@ -475,6 +544,16 @@ class CrossingEnv(FtrEnv):
                 "state/ang_vel_mean":    h_ang.mean().item(),
                 "state/ang_vel_max":     h_ang.max().item(),
                 "state/ang_vel_min":     h_ang.min().item(),
+                "state/roll_rate_mean":  h_ang_xyz[:, 0].abs().mean().item(),
+                "state/pitch_rate_mean": h_ang_xyz[:, 1].abs().mean().item(),
+                "state/yaw_rate_mean":   h_ang_xyz[:, 2].abs().mean().item(),
+                "state/yaw_rate_max":    h_ang_xyz[:, 2].abs().max().item(),
+                "state/vel_fwd_mean":    h_lin_xyz[:, 0].mean().item(),
+                "state/vel_lat_abs_mean": h_lin_xyz[:, 1].abs().mean().item(),
+                "state/v_toward_mean":   v_toward.mean().item(),
+                "state/approach_frac":   approach_frac,
+                "state/heading_err_deg_mean": torch.rad2deg(heading_err.abs()).mean().item(),
+                "state/heading_err_deg_max":  torch.rad2deg(heading_err.abs()).max().item(),
                 "state/roll_deg_mean":   torch.rad2deg(h_roll).mean().item(),
                 "state/roll_deg_max":    torch.rad2deg(h_roll).max().item(),
                 "state/roll_deg_min":    torch.rad2deg(h_roll).min().item(),
