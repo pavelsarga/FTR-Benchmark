@@ -9,8 +9,27 @@ from marv_rl_training.observations import Observation, ObservationEncoder
 
 @dataclass
 class ATD3QNObservation(Observation):
+    """Local terrain heightmap H (Eq. 1) + robot state E = {theta_f1, theta_f2, theta_R}
+    (Eq. 2) from Pan et al. 2023, "Deep Reinforcement Learning for Flipper Control of
+    Tracked Robots" (AT-D3QN, arXiv:2306.10352).
+
+    dim = 15 (H) + 3 (E) = 18. The chassis pitch theta_R was previously missing: this class
+    was 17-D with E = {theta_f1, theta_f2} only. That was an undocumented omission, not a
+    deviation from AT-D3QN in favour of something else -- the paper's Eq. 2 reads
+    "E = {theta_f1, theta_f2, theta_R}", and its text is explicit: "The robot state E
+    consists of the angle of the robot's front flipper theta_f1, the angle of the robot's
+    rear flipper theta_f2, and the chassis pitch angle theta_R." ICM-D3QN's Eq. 2 is
+    word-for-word identical, and icmd3qn_observation.py already followed it.
+
+    The omission mattered more than one feature usually would: pitch was the ONLY pose
+    quantity in this observation, so AT-D3QN was blind to its own attitude entirely (no
+    pitch, no roll, and -- because the heightmap is chassis-referenced -- no ride height
+    either). R_pitch penalises pitch dynamics the network had no way to perceive.
+    """
+
     supports_vecnorm = False
-    dim = 17   # 15 (terrain) + 2 (front/rear flipper angle) — requires sync_flipper_control: true
+    dim = 18   # 15 (terrain) + 2 (front/rear flipper angle) + 1 (chassis pitch)
+               # requires sync_flipper_control: true
 
     def __call__(self, prev_state, action, prev_state_der, curr_state):
         raise NotImplementedError("FtrFlatObservation is populated directly by FtrTorchRLEnv._step / _reset.")
@@ -32,10 +51,11 @@ class ATD3QNEncoder(ObservationEncoder):
     Control of Tracked Robots": a robot-terrain interaction feature extraction module
     (block (1), green) feeding a Double-Dueling DQN head (block (2), red).
 
-    Input:  x of shape (..., HM_DIM + STATE_DIM) = (..., 15 + 2)
+    Input:  x of shape (..., HM_DIM + STATE_DIM) = (..., 15 + 3)
       - H = x[..., :15]  local terrain heights (N downsampled point-set averages)
-      - E = x[..., 15:]  robot state (front/rear flipper angle) — requires
-        sync_flipper_control: true, which halves FtrEnv.flipper_num from 4 to 2
+      - E = x[..., 15:]  robot state {theta_f1, theta_f2, theta_R} (Eq. 2) — the flipper
+        pair angles require sync_flipper_control: true, which halves FtrEnv.flipper_num
+        from 4 to 2, plus the chassis pitch
     Output: Q(S'_t, a_t) of shape (..., NUM_ACTIONS) = (..., 9), the combination of
       {front flipper CW/hold/CCW} x {rear flipper CW/hold/CCW}.
 
@@ -45,7 +65,7 @@ class ATD3QNEncoder(ObservationEncoder):
     """
 
     HM_DIM = 15
-    STATE_DIM = 2
+    STATE_DIM = 3
     NUM_ACTIONS = 9
 
     def __init__(

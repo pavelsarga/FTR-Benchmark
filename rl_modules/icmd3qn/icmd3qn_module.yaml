@@ -1,29 +1,112 @@
-# ICMD3QNModule-specific parameters (Pan et al. 2023, ICM-D3QN) that don't belong in the
-# standard training config (configs/).
+# ICMD3QNModule parameters that don't belong in the standard training config (configs/).
+# Eq. numbers refer to Pan et al. 2023, "Deep Reinforcement Learning for Flipper Control of
+# Tracked Robots in Urban Rescuing Environments" (Remote Sensing 15(18), 4616).
+#
+# R^e_t = R_end + kappa_flipper*R_flipper + kappa_pitch*R_pitch + kappa_contact*R_contact  (Eq. 10)
+#
+# The MARV-morphology adaptations gated below are documented in rl_modules/pan_shared.py.
+
 orientation_history_k: 100
 
-# R_pitch (Eq. 6): lambda_2, used as both the smoothness penalty's slope and its
-# violation threshold (1/lambda_2), matching the paper's single-coefficient formulation.
-lambda_pitch: 0.33   # Table 2
+# Table 2. lambda_1 / lambda_2 double as the saturation coefficient and (via 1/lambda) the
+# clamp point that keeps each term inside [-1, 0].
+lambda_pitch: 0.33       # lambda_2 (Eq. 6)
+lambda_flipper: 0.1      # lambda_1 (Eq. 4)
+# lambda doubles as the saturation threshold: each term hits -1 at Delta > 1/lambda.
+#
+# R_FLIPPER IS SCALED SO A MAXIMALLY-WRONG FLIPPER COSTS ~75% OF THE TERMINAL REWARD.
+#   episode      = 30 s / (0.005 s x 20 decimation) = 300 control steps
+#   terminal     = +/-2 (goal_reached_reward / failed_reward)
+#   target       = 0.75 x 2 = 1.50 cumulative
+#   kappa_flipper x 300 x |R_flipper|max = 1.50  ->  kappa = 0.005 with R spanning [-1, 0]
+# kappa is therefore UNCHANGED at the papers' Table 2 value; the term simply never reached
+# -1, because lambda_1 = 0.1 puts saturation at Delta = 10 rad and a +/-pi/3 flipper tops out
+# near 2.1 rad. Measured on logs/train_marv_atd3qn_11369832, a 69 deg deviation cost 0.18 over
+# an episode -- 9% of terminal -- so the policy simply ignored it and sat at its joint limits.
+#
+# Saturating at pi/2 ("a flipper 90 deg from its target is maximally wrong", matching the
+# +/-80-90 deg joint range) puts the observed deviations across the full linear range rather
+# than clipping them, so the term keeps a gradient everywhere it operates:
+#   14.6 deg (ICM rear, already tracking) -> 12% of terminal
+#   69.3 deg (AT front)                   -> 58%
+#   95.6 deg (ICM front)                  -> 75%
+# null restores the paper-literal value. Raise kappa_flipper if 75% proves too weak.
+lambda_flipper_saturation_rad: 1.5708   # pi/2
+# R_pitch left paper-literal for now; it averages about -1e-4 per step (see the run logs).
+lambda_pitch_saturation_rad: null
 
-# R_flipper (Eq. 4): lambda_1, same dual role (slope + 1/lambda_1 threshold). Front
-# flipper only, matching the paper — Eq. 4 does not define this term for the rear flipper.
-lambda_flipper: 0.1   # Table 2
+kappa_flipper: 0.005     # kappa_1 (Eq. 10) — Table 2
+kappa_pitch: 0.005       # kappa_2 (Eq. 10) — Table 2
+kappa_contact: 0.005     # kappa_3 (Eq. 10) — Table 2
 
+# ---- Robot geometry ----------------------------------------------------------------
+# Fallback only: the flipper pivot base is measured from the articulation at runtime
+# (PanRewardMixin.pivot_half_base reads each flipper's wheel-1 body, which sits exactly on
+# the pivot). This value is used only if that query fails. 0.5 was an FTR literal; MARV's
+# flipper is 0.498 m long with a 0.3035 m pivot-to-tip axle distance
+# (MarvWheelArticulation), so a pivot base near 0.5 m is the right order but should not be
+# trusted over the measurement.
 robot_wheel_base_length: 0.5
-robot_wheel_diam: 0.24
+# robot_wheel_diam is gone: the terrain-expansion offset now comes from the robot's own
+# auxiliary (flipper-tip) wheel radius and the hinge height from track_wheel_radius, which
+# are the quantities the paper's Fig. 4 construction actually needs. The old 0.24 literal
+# was FTR's, and the two modules disagreed on whether to halve it.
 
-# Height-map bin ordering assumption used by the R_flipper candidate-angle geometry.
-# Flip to false if empirical testing shows front/rear reward shaping is reversed.
-hmap_x_increasing: true
+# ---- MARV adaptations (see rl_modules/pan_shared.py) ---------------------------------
+# Mirror R_flipper onto the rear flipper. The paper shapes the front only, because on its
+# six-track robot the rear flipper is auxiliary; MARV has no main tracks, so the rear pair
+# is half the drivetrain. Front and rear are averaged, so kappa_flipper keeps its meaning.
+# false = paper-literal front-only shaping.
+rear_flipper_shaping: true
 
-# R_contact (Eq. 7-8) approximation: the paper classifies discrete contact points against
-# terrain point-set partitions (T_r/T_br/T_bf/T_f), unavailable in this simulator. We
-# instead penalise the chassis lifting off the ground via FtrEnv's existing center
-# ground-clearance signal as a proxy for "tracks not contacting terrain".
-contact_clearance_threshold: 0.03   # meters
+# Evaluate Fig. 4's candidate angle at the NOMINAL ride height (terrain referenced to the
+# ground under the robot) instead of the robot's current chassis height.
+#
+# The papers can use the chassis because their six-track robot's main tracks pin its height.
+# MARV's height is set by the flippers, so chassis-referencing makes theta* a function of the
+# robot's own action: standing tall makes all terrain appear to sink, theta* rotates down,
+# the reward drives the flippers down, and the robot stands taller. Measured on flat ground:
+# theta* = -0.048 / -0.231 / -0.400 rad at ride heights of 0.00 / 0.15 / 0.30 m. The loop is
+# visible as an anti-correlation between pan/theta_star_front and state/clearance_mean
+# (r = -0.27..-0.60) in the four D3QN runs; the worst of them balanced on the flipper tips
+# with all four flippers at their down limit.
+#
+# This is NOT a sign fix for Eq. 4 -- with an obstacle ahead at nominal height theta* is
+# correctly +1.047 rad (flipper up). false = paper-literal chassis-referenced.
+candidate_angle_ground_referenced: true
 
-# Eq. 10 weights: R^e_t = R_end + kappa_flipper*R_flipper + kappa_pitch*R_pitch + kappa_contact*R_contact
-kappa_flipper: 0.005
-kappa_pitch: 0.005
-kappa_contact: 0.005
+# Smallest hinge-to-bin lever arm admitted into theta*'s max over bins. null = one H bin
+# width (2.25 m / 15 = 0.15 m); 0.0 disables the guard.
+#
+# theta* is a max, so the bin nearest a hinge dominates it, and atan2(dz, reach) blows up as
+# reach -> 0. With a ~0.25 m pivot half-base against 0.15 m bins the nearest bin lands 0.05 m
+# from each hinge, where terrain only 0.10 m high yields a +50.9 deg target (vs +7.0 deg from
+# a 0.50 m lever arm). In logs/train_marv_icmd3qn_11369833 theta*_rear averaged +41.7 deg and
+# the rear flipper tracked it to within 15 deg -- the term worked, the target was wrong.
+#
+# The papers max over a dense point cloud, where a real point that close means the robot is
+# against a step and a steep flipper is correct. Here that "point" is a 0.15 m bin average,
+# so it is a discretisation artifact -- and its lever arm depends on the measured pivot
+# half-base, so the target would change entirely at 0.30 m instead of 0.25 m.
+# pan/argmax_bin_* and pan/pivot_half_base_m are logged to confirm this rather than infer it.
+min_hinge_reach_m: null
+
+# Average each Eq. 1 sub-point-set over a band this wide (m) instead of the full 1.05 m
+# heightmap width. MARV's track footprint is 0.36 m, so full-width averaging folded in
+# terrain the robot never touches. null = full width (paper-literal).
+lateral_band_m: 0.4
+
+# R_contact: with false (default) the term keeps Eq. 8's {0, -1} shape but asks MARV's
+# question — is at least one flipper pair down on each side of the CoM, and is the belly
+# clear — instead of the six-track robot's "are the main tracks on the ground".
+# true restores the previous |clearance| > contact_clearance_threshold proxy — a symmetric
+# band around a nominal ride height that penalises MARV's correct driving pose (up on the
+# flipper tracks) as hard as bellying out. It fired on 58.5-89.9% of steps (mean 72.6%)
+# across a 73 M-frame run.
+paper_contact_semantics: false
+contact_clearance_threshold: 0.03   # m, only read when paper_contact_semantics: true
+belly_clearance_min: -0.02          # m; clearance below this = chassis grounding out
+# Fraction of flipper_contact_effort_limit above which the joint-torque proxy counts as
+# ground contact. Only used when the PhysX ContactSensor is unavailable — with it,
+# ground-truth per-flipper contact comes from rl_modules/ctrac/ctrac_contact.py.
+contact_torque_threshold: 0.6

@@ -1,8 +1,99 @@
-# ATD3QNModule-specific parameters that don't belong in the standard training config (configs/).
-orientation_history_k: 100
-pitch_delta_threshold: 1.047197551 # pi/3
-mean_pitch_delta_threshold: 0.33
-flipper_angle_threshold: 0.1
+# ATD3QNModule parameters that don't belong in the standard training config (configs/).
+# Eq. numbers refer to Pan et al. 2023, "Deep Reinforcement Learning for Flipper Control of
+# Tracked Robots" (arXiv:2306.10352). AT-D3QN and ICM-D3QN are by the same authors and share
+# R_flipper (Eq. 4), R_pitch (Eq. 6) and R_end (Eq. 7) verbatim, so these values mirror
+# icmd3qn_module.yaml — including the kappa weights, which the AT-D3QN paper does not state
+# but its sibling's Table 2 does. Running AT-D3QN's terms unweighted (as this file used to)
+# made the two baselines incomparable: identical equations, 200x apart in scale.
 
+orientation_history_k: 100
+
+lambda_pitch: 0.33       # lambda_2 (Eq. 6)
+lambda_flipper: 0.1      # lambda_1 (Eq. 4)
+# lambda doubles as the saturation threshold: each term hits -1 at Delta > 1/lambda.
+#
+# R_FLIPPER IS SCALED SO A MAXIMALLY-WRONG FLIPPER COSTS ~75% OF THE TERMINAL REWARD.
+#   episode      = 30 s / (0.005 s x 20 decimation) = 300 control steps
+#   terminal     = +/-2 (goal_reached_reward / failed_reward)
+#   target       = 0.75 x 2 = 1.50 cumulative
+#   kappa_flipper x 300 x |R_flipper|max = 1.50  ->  kappa = 0.005 with R spanning [-1, 0]
+# kappa is therefore UNCHANGED at the papers' Table 2 value; the term simply never reached
+# -1, because lambda_1 = 0.1 puts saturation at Delta = 10 rad and a +/-pi/3 flipper tops out
+# near 2.1 rad. Measured on logs/train_marv_atd3qn_11369832, a 69 deg deviation cost 0.18 over
+# an episode -- 9% of terminal -- so the policy simply ignored it and sat at its joint limits.
+#
+# Saturating at pi/2 ("a flipper 90 deg from its target is maximally wrong", matching the
+# +/-80-90 deg joint range) puts the observed deviations across the full linear range rather
+# than clipping them, so the term keeps a gradient everywhere it operates:
+#   14.6 deg (ICM rear, already tracking) -> 12% of terminal
+#   69.3 deg (AT front)                   -> 58%
+#   95.6 deg (ICM front)                  -> 75%
+# null restores the paper-literal value. Raise kappa_flipper if 75% proves too weak.
+lambda_flipper_saturation_rad: 1.5708   # pi/2
+# R_pitch left paper-literal for now; it averages about -1e-4 per step (see the run logs).
+lambda_pitch_saturation_rad: null
+
+kappa_flipper: 0.005
+kappa_pitch: 0.005
+# AT-D3QN's own paper has no R_contact; this is kappa_3 borrowed from the sibling ICM-D3QN
+# paper's Table 2 -- the same source as kappa_flipper/kappa_pitch above, since AT-D3QN states
+# no kappa values of its own. ENABLED because R_contact is the only term that constrains ride
+# height, and without it AT-D3QN has no restoring force: across three runs its
+# state/clearance_mean climbed monotonically over training (0.110 -> 0.221 in job 11369832,
+# 0.107 -> 0.216 in 11381130) and it settled with the front flipper ~49 deg up and the rear
+# ~64 deg down, balanced on the flipper tips. Raising lambda_flipper_saturation_rad did not
+# supply that force on its own (11381130 kept climbing at the higher flipper weight).
+#
+# Watch two things on the next run:
+#  * pan/contact_front | contact_rear | contact_bellied -- AT's tip-standing pose keeps the
+#    front pair off the ground, so this term may fire on nearly every step. If it does it is
+#    a constant offset carrying no gradient, which is exactly how the old |clearance| proxy
+#    failed; drop kappa_contact rather than assume it is working.
+#  * the dense/terminal budget -- AT sat at 72% of the terminal reward without this term, and
+#    ICM at 0.005 contributes ~32%, which would put AT near ICM's ~104%.
+#
+# 0.0 restores the AT-D3QN paper's reward exactly (and is pinned so in the _paper config).
+kappa_contact: 0.005
+
+# ---- Robot geometry (fallback only — see icmd3qn_module.yaml) ------------------------
 robot_wheel_base_length: 0.5
-robot_wheel_diam: 0.24
+
+# ---- MARV adaptations (see rl_modules/pan_shared.py) ---------------------------------
+rear_flipper_shaping: true
+
+# Evaluate Fig. 4's candidate angle at the NOMINAL ride height (terrain referenced to the
+# ground under the robot) instead of the robot's current chassis height.
+#
+# The papers can use the chassis because their six-track robot's main tracks pin its height.
+# MARV's height is set by the flippers, so chassis-referencing makes theta* a function of the
+# robot's own action: standing tall makes all terrain appear to sink, theta* rotates down,
+# the reward drives the flippers down, and the robot stands taller. Measured on flat ground:
+# theta* = -0.048 / -0.231 / -0.400 rad at ride heights of 0.00 / 0.15 / 0.30 m. The loop is
+# visible as an anti-correlation between pan/theta_star_front and state/clearance_mean
+# (r = -0.27..-0.60) in the four D3QN runs; the worst of them balanced on the flipper tips
+# with all four flippers at their down limit.
+#
+# This is NOT a sign fix for Eq. 4 -- with an obstacle ahead at nominal height theta* is
+# correctly +1.047 rad (flipper up). false = paper-literal chassis-referenced.
+candidate_angle_ground_referenced: true
+
+# Smallest hinge-to-bin lever arm admitted into theta*'s max over bins. null = one H bin
+# width (2.25 m / 15 = 0.15 m); 0.0 disables the guard.
+#
+# theta* is a max, so the bin nearest a hinge dominates it, and atan2(dz, reach) blows up as
+# reach -> 0. With a ~0.25 m pivot half-base against 0.15 m bins the nearest bin lands 0.05 m
+# from each hinge, where terrain only 0.10 m high yields a +50.9 deg target (vs +7.0 deg from
+# a 0.50 m lever arm). In logs/train_marv_icmd3qn_11369833 theta*_rear averaged +41.7 deg and
+# the rear flipper tracked it to within 15 deg -- the term worked, the target was wrong.
+#
+# The papers max over a dense point cloud, where a real point that close means the robot is
+# against a step and a steep flipper is correct. Here that "point" is a 0.15 m bin average,
+# so it is a discretisation artifact -- and its lever arm depends on the measured pivot
+# half-base, so the target would change entirely at 0.30 m instead of 0.25 m.
+# pan/argmax_bin_* and pan/pivot_half_base_m are logged to confirm this rather than infer it.
+min_hinge_reach_m: null
+lateral_band_m: 0.4
+paper_contact_semantics: false
+contact_clearance_threshold: 0.03
+belly_clearance_min: -0.02
+contact_torque_threshold: 0.6
