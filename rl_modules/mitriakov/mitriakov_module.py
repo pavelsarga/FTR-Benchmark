@@ -50,6 +50,13 @@ class MitriakovModule(RLModule):
     This mirrors how the paper itself trained in simulation using known Gazebo staircase
     geometry directly, not real perception (real camera/marker-based perception was only
     used for their real-robot deployment, not simulation training).
+
+    get_reward_components() also adds an optional clearance_reward term (formula ported
+    from marv_rl_module.py's clearance_penalty, sign flipped, gated by
+    env_cfg_overrides.clearance_coef, off by default), beyond the paper's own Eq. 5/6
+    penalties — see that term's inline comment for why it's needed on MARV specifically
+    (no continuous main track, unlike the paper's Absolem/Jaguar) and why it rewards
+    rather than penalises clearance here.
     """
 
     def __init__(self, env) -> None:
@@ -209,6 +216,25 @@ class MitriakovModule(RLModule):
         cog = self._cog_penalty()
         pitch_vel = self._pitch_velocity_penalty()
         components["direction_penalty"] = torch.where(ascending, cog, pitch_vel)
+
+        # Clearance reward — sign flipped from marv_rl_module.py's identical-formula term
+        # (which penalises high clearance) after empirical evidence it didn't help:
+        # env.clearance is a universal per-step signal (hull height above the terrain
+        # directly beneath it) computed once by CrossingEnv regardless of module. Neither
+        # of the paper's own penalties (Eq. 5/6) constrains this: both only look at
+        # pitch/roll-derived COG deviation or pitch velocity, which stay well-defined with
+        # or without a continuously-tracked main chassis. Clearance does not — the paper's
+        # robots keep the hull's underside close to the surface throughout via the main
+        # track itself, so they never needed a reward term for it. MARV has no such track
+        # (see MitriakovFlipperBounds' docstring): the hull can only clear a stair tread
+        # by the flippers actively lifting/bridging it, so REWARDING clearance (rather
+        # than penalising it, as marv_rl does for its own, different reason — discouraging
+        # hovering on open/flat ground) pushes toward that lifted, non-scraping posture
+        # instead of one where the robot keeps its belly low and grinds against the step
+        # edge. Opt-in via env_cfg_overrides.clearance_coef (None by default = disabled,
+        # matching every other cfg.*_coef guard in this project).
+        if cfg.clearance_coef is not None:
+            components["clearance_reward"] = cfg.clearance_coef * (1 / (1 + torch.exp(-((env.clearance - 0.2) / 0.02))))
 
         # Terminal masking/bonus — zero every component on failure/explosion, then add
         # the terminal bonus (goal/fail/timeout — never zeroed). failed_reward should be

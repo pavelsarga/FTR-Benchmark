@@ -58,6 +58,21 @@ class MitriakovFlipperBounds(nn.Module):
     pass by whichever direction that env is currently on, unlike hfc_policy.py's fixed
     templates (there's no per-env direction to select there).
 
+    The paper's own "never below neutral" bound (psi_s in [-pi/4, 0]) assumes a
+    continuously-tracked main chassis: the trailing flipper can be pinned at/above
+    neutral without losing ground contact because the body track keeps driving/
+    supporting the robot regardless. MARV has no such body track — base_link is a bare,
+    low-friction hull (see marv.py's set_robot_env, body_material_friction) with no
+    wheels of its own, so the 4 flipper-wheel assemblies are the ONLY drive/support
+    surfaces. Pinning the trailing flipper at neutral-or-above removes it from ground
+    contact entirely during that phase, which is a plausible cause of stalling on ascent
+    (rear can't press down for extra traction) and bellying-out on descent (front can't
+    reach down to bridge onto the next tread). mitriakov_trail_down_front_deg/
+    mitriakov_trail_down_rear_deg relax that "never below neutral" edge by the given
+    number of degrees below neutral (default 0.0 = paper-exact, matching a tracked body);
+    mitriakov_limit_front_deg/mitriakov_limit_rear_deg still bound the opposite (up)
+    edge as before.
+
     track_v/track_w are always left at the env-wide [-1, 1] full range (untouched by
     either constraint).
     """
@@ -70,6 +85,8 @@ class MitriakovFlipperBounds(nn.Module):
         back_down_deg: float,
         mitriakov_limit_front_deg: float,
         mitriakov_limit_rear_deg: float,
+        mitriakov_trail_down_front_deg: float = 0.0,
+        mitriakov_trail_down_rear_deg: float = 0.0,
     ):
         super().__init__()
         front_up_rad, front_down_rad = math.radians(front_up_deg), math.radians(front_down_deg)
@@ -78,19 +95,22 @@ class MitriakovFlipperBounds(nn.Module):
         rear_low_rad, rear_high_rad = -back_down_rad, back_up_rad
 
         # Tighter target ranges, mirrored between front/rear's opposite sign conventions
-        # (rear up = positive, front up = negative): rear in [0, +limit] (up to limit,
-        # never down), front in [-limit, 0] (up to limit UP, never down).
+        # (rear up = positive, front up = negative): rear in [-trail_down, +limit] (up to
+        # limit, down to trail_down below neutral), front in [-limit, +trail_down] (up to
+        # limit UP, down to trail_down below neutral).
         rear_limit_rad = math.radians(mitriakov_limit_rear_deg)
         front_limit_rad = math.radians(mitriakov_limit_front_deg)
+        rear_trail_down_rad = math.radians(mitriakov_trail_down_rear_deg)
+        front_trail_down_rad = math.radians(mitriakov_trail_down_front_deg)
 
         def inv_map(target: float, low: float, high: float) -> float:
             """Inverse of target = low + unit * (high - low), unit = (cmd + 1) / 2."""
             return 2.0 * (target - low) / (high - low) - 1.0
 
-        self.rear_tight_low = inv_map(0.0, rear_low_rad, rear_high_rad)
+        self.rear_tight_low = inv_map(-rear_trail_down_rad, rear_low_rad, rear_high_rad)
         self.rear_tight_high = inv_map(rear_limit_rad, rear_low_rad, rear_high_rad)
         self.front_tight_low = inv_map(-front_limit_rad, front_low_rad, front_high_rad)
-        self.front_tight_high = inv_map(0.0, front_low_rad, front_high_rad)
+        self.front_tight_high = inv_map(front_trail_down_rad, front_low_rad, front_high_rad)
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         is_ascending = obs[..., -1] > 0.5
@@ -120,8 +140,10 @@ class MitriakovPolicyConfig(PolicyConfig):
     front_up_deg/front_down_deg/back_up_deg/back_down_deg must match
     env_cfg_overrides.marv_flipper_*_deg in the training config (the outer, looser
     bound); mitriakov_limit_front_deg/mitriakov_limit_rear_deg is the tighter inner
-    constraint applied only for the direction each one matters for (see
-    MitriakovFlipperBounds).
+    constraint applied only for the direction each one matters for, and
+    mitriakov_trail_down_front_deg/mitriakov_trail_down_rear_deg relaxes that
+    constraint's neutral edge to allow the trailing flipper some travel below neutral
+    (see MitriakovFlipperBounds).
     """
 
     actor_optimizer_opts: dict[str, Any]
@@ -134,6 +156,8 @@ class MitriakovPolicyConfig(PolicyConfig):
     back_down_deg: float = 90.0
     mitriakov_limit_front_deg: float = 45.0
     mitriakov_limit_rear_deg: float = 45.0
+    mitriakov_trail_down_front_deg: float = 0.0
+    mitriakov_trail_down_rear_deg: float = 0.0
 
     def create(self, env, **kwargs):
         obs_dim = env.observations[0].dim
@@ -149,6 +173,7 @@ class MitriakovPolicyConfig(PolicyConfig):
             MitriakovFlipperBounds(
                 self.front_up_deg, self.front_down_deg, self.back_up_deg, self.back_down_deg,
                 self.mitriakov_limit_front_deg, self.mitriakov_limit_rear_deg,
+                self.mitriakov_trail_down_front_deg, self.mitriakov_trail_down_rear_deg,
             ),
             in_keys=[OBS_KEY], out_keys=["low", "high"],
         )
