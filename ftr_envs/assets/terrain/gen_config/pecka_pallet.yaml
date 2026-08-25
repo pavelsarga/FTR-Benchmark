@@ -23,12 +23,18 @@
 
 # HISTORY: this course used to be generated with xformOp:orient [0, 0, 0, 1.0], which
 # FTR-Benchmark's terrain.py reads as Gf.Quatd(w=0, xyz=(0,0,1)) — a 180 degree rotation
-# about Z (see assembler.py's build_config_yaml). With a single 1x1 tile that mirrors the
-# course onto itself, so the pallet actually sat front_margin from the OPPOSITE end and
-# the robot met it after ~6.5m of runway instead of the 3.5m the sizing note below
-# assumes. The generator now emits the w-first identity [1.0, 0, 0, 0], so the pallet is
-# where this config says it is. Any CREPS results predating that fix were measured
-# against the mirrored layout.
+# about Z (see assembler.py's build_config_yaml) that mirrors the course in X and Y.
+# For THIS course that rotation was a no-op and no CREPS result is affected by it: the
+# platform is centered in its tile and every repeat is geometrically identical
+# (min_height == max_height), so mirroring maps the course onto itself. Verified against
+# the regenerated assets: the pallet spans 1.00-2.95 m from the spawn point of a 4.0 m
+# traverse, i.e. centered either way. The generator now emits the w-first identity
+# [1.0, 0, 0, 0] regardless.
+#
+# NOTE: the sizing paragraph above is stale — it cites fixed_forward_vel=0.3,
+# tile.width=10.8 and repeats: 1, but marv_config_creps.yaml now sets
+# fixed_forward_vel=0.4 and this config is tile.width 6.0 / repeats 10 (4.0 m spawn-to-
+# goal, 12.0 m of travel budget). The margins still hold; the numbers quoted do not.
 
 name: pecka_pallet
 seed: 42
