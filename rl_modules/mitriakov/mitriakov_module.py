@@ -231,10 +231,21 @@ class MitriakovModule(RLModule):
         # than penalising it, as marv_rl does for its own, different reason — discouraging
         # hovering on open/flat ground) pushes toward that lifted, non-scraping posture
         # instead of one where the robot keeps its belly low and grinds against the step
-        # edge. Opt-in via env_cfg_overrides.clearance_coef (None by default = disabled,
-        # matching every other cfg.*_coef guard in this project).
+        # edge.
+        #
+        # Gated by _on_staircase() (unlike the first version of this term) to match how
+        # direction_penalty is scoped — logs/train_mitriakov_11399538 showed the
+        # ungated, coef=0.1 version paying out for the WHOLE episode (approach + exit,
+        # not just the ~30-60 steps actually on the stairs) at ~0.052/step, ~17x
+        # traversal_reward (~0.003/step) and ~7x direction_penalty (~0.007/step) — a
+        # policy that stands permanently on its flipper tips for clearance collects far
+        # more reward than one that actually climbs, which is exactly the "can descend,
+        # can't ascend, stands on flipper tips" behavior observed. Opt-in via
+        # env_cfg_overrides.clearance_coef (None by default = disabled, matching every
+        # other cfg.*_coef guard in this project).
         if cfg.clearance_coef is not None:
-            components["clearance_reward"] = cfg.clearance_coef * (1 / (1 + torch.exp(-((env.clearance - 0.2) / 0.02))))
+            clearance_term = cfg.clearance_coef * (1 / (1 + torch.exp(-((env.clearance - 0.2) / 0.02))))
+            components["clearance_reward"] = torch.where(self._on_staircase(), clearance_term, torch.zeros_like(clearance_term))
 
         # Terminal masking/bonus — zero every component on failure/explosion, then add
         # the terminal bonus (goal/fail/timeout — never zeroed). failed_reward should be

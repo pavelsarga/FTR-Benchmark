@@ -794,7 +794,12 @@ class FtrEnv(DirectRLEnv):
 
             local_map = torch.from_numpy(local_map).to(self.device).clone()
             # Flip row axis so row 0 = front (+x), row 44 = rear (−x).
-            # Lateral stays: col 0 = left (−y), col 20 = right (+y).
+            # Lateral stays as get_obs produced it: col 0 = −y, col 20 = +y. Under REP-103
+            # (x forward, y left, z up) that means **col 0 is the robot's RIGHT** and col 20
+            # its LEFT — this comment previously said the opposite, and the deployment side
+            # has to mirror the lateral axis because of it (grid_map puts col 0 at +y; see
+            # marv_rl_training/training/ftr_heightmap_window.py). Verified by probing
+            # MapHelper.get_obs with an asymmetric map, not inferred from this comment.
             self.current_frame_height_maps[i, :, :] = local_map.flip(0)
 
     @cached_property
