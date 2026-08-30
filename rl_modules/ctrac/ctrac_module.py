@@ -122,6 +122,8 @@ class CTRACModule(RLModule):
         k = int(self.cfg.swing_window_k)
         self._roll_hist = torch.zeros(env.num_envs, k + 1, device=env.device)
         self._pitch_hist = torch.zeros(env.num_envs, k + 1, device=env.device)
+        kf = int(self.cfg.flipper_activity_window)
+        self._flipper_hist = torch.zeros(env.num_envs, kf + 1, env.flipper_num, device=env.device)
 
     def calc_scanned_height_maps(self, base_robot_frame=True):
         env = self.env
@@ -195,6 +197,20 @@ class CTRACModule(RLModule):
         if fresh.any():
             self._roll_hist[fresh] = roll[fresh].unsqueeze(-1)
             self._pitch_hist[fresh] = pitch[fresh].unsqueeze(-1)
+
+    def _update_flipper_hist(self) -> None:
+        """Trailing window of raw flipper angles, oldest..newest, (N, kf+1, flipper_num).
+
+        Same shape of bookkeeping as _update_swing_hist. On a fresh episode every slot is
+        filled with the current angles so the window opens at zero net displacement rather
+        than reading a carry-over from the previous episode's final posture.
+        """
+        env = self.env
+        pos = env.flipper_positions
+        fresh = env.episode_length_buf == 0
+        self._flipper_hist = torch.cat([self._flipper_hist[:, 1:], pos.unsqueeze(1)], dim=1)
+        if fresh.any():
+            self._flipper_hist[fresh] = pos[fresh].unsqueeze(1)
 
     @staticmethod
     def _swing_penalty(hist: torch.Tensor, bmax_rad: float) -> torch.Tensor:
@@ -273,6 +289,56 @@ class CTRACModule(RLModule):
         components["goal_velocity"] = mcfg.goal_velocity_weight * (
             v_toward / mcfg.goal_velocity_ref
         ).clamp(-1.0, 1.0)
+
+        # Flipper actuation while blocked — this project's addition, not in the paper.
+        #
+        # Measured on run 11400127 at 48.7M frames: the policy commands v_mean 0.43-0.56 and
+        # achieves |v| 0.175-0.251, of which the VERTICAL component (0.213) exceeds the forward
+        # one (0.132) — the robot judders against an obstacle instead of traversing. Meanwhile
+        # the flipper actions sit at 0.076-0.200 on [-1, 1] (i.e. "hold posture", since
+        # flipper_control_mode is velocity) while flipper torque maxes out at exactly 1000.0,
+        # the MARV_CFG effort_limit, and clearance/height_min is -0.069 m: belly-down, pushing
+        # at the torque ceiling, flippers never repositioned. dist_to_goal has been pinned at
+        # ~4.7 m since 7M frames as a result.
+        #
+        # Rewards MOVEMENT (net angle change), not deflection from flat. An earlier version of
+        # this term paid for |angle| — a static quantity — which meant a blocked robot holding
+        # any bent posture collected the bonus indefinitely without actuating anything; on run
+        # 11426609 that term rose to 0.077/step while clearance/height fell 0.036 -> 0.021 and
+        # eval success sat flat at 0.36-0.39 for 25M frames.
+        #
+        # Movement is measured as NET displacement across a trailing window
+        # (flipper_activity_window steps), |theta_t - theta_{t-kf}|, not as the summed
+        # per-step |delta theta|. That distinction is the whole anti-farming argument: in
+        # velocity control mode the action IS a rotation rate (flipper_dt = 5 deg/step), so a
+        # summed-|delta| reward is maximised by chattering at +-1, which is both easier to
+        # find than climbing and useless — it produces no posture. Net displacement over a
+        # window cancels chatter to ~0 while paying full value for sustained, committed
+        # actuation in one direction. Set flipper_activity_window: 1 to recover the raw
+        # per-step rate (and its farmability) if that is ever wanted deliberately.
+        #
+        # Gated on being blocked so it pays only when the robot is stuck: on open ground
+        # holding a flat posture is correct and re-articulating for its own sake should not
+        # be paid for.
+        self._update_flipper_hist()
+        v_cmd = env.last_action[:, 0]
+        blocked = (v_cmd > mcfg.blocked_v_cmd_min) & (v_toward < mcfg.blocked_v_toward_max)
+        move_ref = torch.deg2rad(torch.tensor(float(mcfg.flipper_activity_move_ref_deg), device=env.device))
+        net_move = (self._flipper_hist[:, -1] - self._flipper_hist[:, 0]).abs()  # (N, flipper_num) rad
+        per_flipper = (net_move / move_ref).clamp(0.0, 1.0)
+        # Exponent applied PER FLIPPER, before the mean, and for the same reason the
+        # deflection version used one: a linear term has a constant marginal rate, so a 1-deg
+        # drift over the window pays at exactly the rate a full-range sweep does and there is
+        # no deadzone. Cubing leaves the saturated value (1.0) — and therefore the
+        # weight-vs-goal_velocity_weight ceiling argument in ctrac_module.yaml — untouched
+        # while making near-stationary flippers pay essentially nothing. Cubing the mean
+        # instead would score the standard climbing manoeuvre (front pair sweeping, rear pair
+        # held) at (0.5)**3 = 0.125 rather than (1+1+0+0)/4 = 0.5, penalising correct use of
+        # two of the four flippers.
+        movement = per_flipper.pow(float(mcfg.flipper_activity_exponent)).mean(dim=-1)
+        components["flipper_activity"] = (
+            mcfg.flipper_activity_weight * blocked.float() * movement
+        )
 
         # Posture swing (Eq. 5-6)
         self._update_swing_hist()

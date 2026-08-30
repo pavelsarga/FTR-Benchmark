@@ -43,9 +43,21 @@ contact_force_threshold: 1.0
 # posture_swing is left at 1.0: it was already only -0.017/step, so it is not what is
 # suppressing the climb. progress is left at 1.0 — it is the term that actually drives
 # goal-seeking, and raising the others' cost relative to it is the whole point.
-progress_weight: 1.0
-posture_swing_weight: 1.0
-stabilization_weight: 0.3
+# progress is a LEVEL (-dist/total_dist), not a rate, so at the measured operating point
+# (lane 7.07 m, dist_to_goal 4.72 m, v_toward 0.132 m/s) it sits at -0.694 while the part that
+# actually responds to this step's action is 1.32 cm of travel = 0.0019. A 358:1 ratio of
+# constant offset to signal: the term dominates the reward composition plot while carrying
+# almost no gradient, and discounted over 300 steps at gamma 0.995 the offset alone is -104,
+# nearly cancelling the +150 for reaching the goal.
+#
+# It is also redundant. v_toward is -d(dist)/dt, so goal_velocity is already a scaled
+# potential-difference on the very same quantity (Ng et al. 1999) — the informative half of
+# what progress was meant to provide, at a usable scale. Kept at 0.15 rather than removed so
+# a mild "be closer" preference survives (and Eq. 4 is still recognisably present), with
+# goal_velocity carrying the actual progress gradient.
+progress_weight: 0.15
+posture_swing_weight: 0.1
+stabilization_weight: 0.05
 
 # ---- Goal-approach velocity (see ctrac_module.py's goal_velocity block) ----
 # reward = weight * clamp(v_toward_goal / ref, -1, 1), added because nothing in the paper's
@@ -61,3 +73,54 @@ stabilization_weight: 0.3
 # where every action was merely less bad than another.
 goal_velocity_weight: 0.5
 goal_velocity_ref: 0.4
+
+# ---- Flipper actuation while blocked (see ctrac_module.py's flipper_activity block) ----
+# reward = weight * blocked * mean_i( clamp(|net_move_i| / move_ref, 0, 1) ** exponent ),
+# where net_move_i = theta_i(t) - theta_i(t - flipper_activity_window) and
+# blocked = (commanded v > blocked_v_cmd_min) AND (v_toward < blocked_v_toward_max).
+#
+# Added because the measured failure at 48.7M frames is not speed and not heading — heading
+# error held at 0.75-1.67 deg all run, lateral slip at 0.009-0.014 — but that the policy never
+# repositions its flippers: actions 0.076-0.200 on [-1,1] with torque pinned at the 1000.0
+# effort_limit and clearance_min -0.069 m. It drives into an obstacle and pushes.
+#
+# This term pays for MOVEMENT, not for holding a deflected posture. The earlier deflection
+# form (|angle| / 60 deg) was static: once bent, a blocked robot collected the bonus forever
+# without actuating anything. Run 11426609 showed exactly that — the term reached 0.077/step
+# while clearance/height fell 0.036 -> 0.021 and eval success stayed flat at 0.36-0.39 across
+# its final 25M frames.
+flipper_activity_weight: 0.30
+
+# Window length in control steps for the net-displacement measurement. NOT a smoothing
+# parameter — it is the anti-farming mechanism. flipper_control_mode is velocity, so the
+# action is a rotation rate (ftr_env.py's flipper_dt = 5 deg/step); a reward on summed
+# per-step |delta theta| would therefore be maximised by chattering at +-1, which yields no
+# posture and is easier to discover than climbing. Measuring NET displacement across a window
+# makes chatter cancel to ~0 while sustained one-direction actuation scores full value.
+# 1 recovers the raw per-step rate, farmability included — set it only deliberately.
+flipper_activity_window: 5
+
+# Net degrees across the window that count as full credit. Ceiling at 5 deg/step x 5 steps =
+# 25 deg, so 15 deg is 60% of the maximum sustained sweep: reachable, but only by committing
+# to a direction for most of the window rather than drifting.
+flipper_activity_move_ref_deg: 15.0
+
+# Exponent on the per-flipper normalised movement, applied BEFORE the mean over the four
+# flippers. 1.0 gives a linear term.
+#
+# Linear is deadzone-free: the marginal reward for the first degree of drift equals that for
+# the last degree of a full sweep, so any nonzero motion is paid at the full rate. 3.0 keeps
+# f(1) = 1 — the ceiling, and therefore the "flipper ceiling must stay below
+# goal_velocity_weight = 0.5 so travel dominates fidgeting" argument below, is unchanged —
+# while cutting a 5 deg net drift to ~0.004 of full credit. 4.0 is available if 3.0 still
+# leaves the term farmable; above that even a correct half-range sweep becomes near-worthless.
+flipper_activity_exponent: 3.0
+
+# The ceiling is what bounds this term, not its realized value. Sweeping the flippers while
+# stuck pays at most `weight`; travelling at goal_velocity_ref pays goal_velocity_weight = 0.5.
+# Keeping weight below that is what makes escaping the obstacle strictly better than
+# articulating on top of it, and 0.5 is the exact point where the two tie — do not go there.
+# If the flippers still do not move, the next lever is the `blocked` gate
+# (blocked_v_toward_max), not more weight.
+blocked_v_cmd_min: 0.15      # policy is asking to move (mean v_cmd is 0.43-0.56)
+blocked_v_toward_max: 0.10   # but is not approaching (mean v_toward is 0.13; ~0.25 traverses)
