@@ -567,6 +567,54 @@ class FtrEnv(DirectRLEnv):
         if hasattr(self, "prev_lin_velocities"):
             self.prev_lin_velocities[env_ids] = 0.0
 
+        self._refresh_state_after_reset(env_ids)
+
+    def _refresh_state_after_reset(self, env_ids: Sequence[int]):
+        """Re-read the cached robot state for envs that were just teleported.
+
+        Required because of where the two halves of the step run. IsaacLab's
+        DirectRLEnv.step order is _get_dones -> _get_rewards -> _reset_idx ->
+        _get_observations, and _post_physics_step() -- the ONLY place self.positions /
+        orientations / orientations_3 / velocities / current_frame_height_maps are
+        refreshed -- is called from _get_dones(), i.e. BEFORE this reset. Without this
+        method the observation built immediately after a reset mixes the OLD robot pose
+        (those cached buffers) with the NEW spawn: target_positions/start_positions are
+        assigned above, and self._robot.data.* already reflects write_root_pose_to_sim.
+
+        Measured cost of leaving it stale, on the Stage-I C-VAE dataset: on 100% of
+        reset frames (2.8% of all transitions) the goal vector read up to 90 m on a 7 m
+        lane and ctrac's ground-truth contact points landed up to 87 m from the base --
+        contributing a mask-weighted L_est of 405 per row against 0.006 for a clean row,
+        in 99.9% of 256-sample batches. Reproduced offline: at the C-VAE's Stage-II
+        learning rate that corruption is the difference between the contact-existence head
+        reaching 71.5% accuracy and never leaving its 55.8% chance level. Every module is
+        affected, not just ctrac -- marv_rl_module.py's goal_world = target_positions -
+        positions carries the same spike.
+
+        Only the reset subset is recomputed: for the height maps that matters (see
+        calc_current_frame_height_maps), and orientations_3 is a per-env CPU conversion.
+        history_positions is deliberately left as _reset_idx cleared it -- the next
+        _post_physics_step appends the fresh pose on the following step.
+        """
+        if len(env_ids) == 0:
+            return
+        idx = env_ids if isinstance(env_ids, torch.Tensor) else torch.as_tensor(list(env_ids), device=self.device)
+        self.positions[idx] = self._robot.data.root_pos_w[idx]
+        self.orientations[idx] = self._robot.data.root_quat_w[idx]
+        self.robot_lin_velocities[idx] = self._robot.data.root_lin_vel_b[idx]
+        self.robot_ang_velocities[idx] = self._robot.data.root_ang_vel_b[idx]
+        self.orientations_3[idx] = torch.stack([
+            torch.from_numpy(quat_to_euler_angles(q)).to(self.device)
+            for q in self.orientations[idx].cpu()
+        ])
+        # flipper_positions is deliberately NOT re-read here. _reset_idx has just set it to
+        # the freshly sampled initial_flipper_range angles and pushed them to sim as PD
+        # TARGETS, while write_joint_state_to_sim zeroed the actual joint state — so
+        # get_flipper_pos() would return ~0 until physics has stepped and would overwrite
+        # the intended spawn posture with zeros. _post_physics_step re-reads it on the next
+        # step, once the joints have actually moved.
+        self.calc_current_frame_height_maps(env_ids=[int(i) for i in idx])
+
     def _pre_physics_step(self, actions: torch.Tensor):
         self.actions[:] = actions
         self.last_action[:] = actions  # store raw action before noise 
@@ -774,10 +822,16 @@ class FtrEnv(DirectRLEnv):
         _data = cycle(self._reset_info)
         self._reset_info_generate = lambda: next(_data)
 
-    def calc_current_frame_height_maps(self):
+    def calc_current_frame_height_maps(self, env_ids: "Sequence[int] | None" = None):
+        """Recompute the local height map for `env_ids` (all envs when None).
+
+        The subset form exists for _refresh_state_after_reset: this is a per-env Python loop
+        doing CPU map lookups, so re-running it for all envs after every reset would roughly
+        double the per-step cost of the single most expensive call in the step loop.
+        """
         lower = self.terrain_cfg.map.lower
         upper = self.terrain_cfg.map.upper
-        for i in range(self.num_envs):
+        for i in (range(self.num_envs) if env_ids is None else env_ids):
             pos = self.positions[i].cpu()
             if not (lower[0] < pos[0] < upper[0]) or not (lower[1] < pos[1] < upper[1]):
                 carb.log_error(f"The position of the robot seems to be abnormal. {pos=}")
