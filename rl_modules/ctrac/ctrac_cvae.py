@@ -160,14 +160,22 @@ def contact_est_loss(pred_points: torch.Tensor, target_points: torch.Tensor, tar
     return (mask * mse).sum(dim=-1).mean()
 
 
-def contact_geo_loss(pred_points: torch.Tensor, target_prob: torch.Tensor, robot_pos: torch.Tensor,
-                      max_reach: float) -> torch.Tensor:
+def contact_geo_loss(pred_points: torch.Tensor, target_prob: torch.Tensor,
+                     max_reach: float) -> torch.Tensor:
     """L_geo (Eq. 14) — spatial-feasibility penalty. The paper's region Omega ("contact
     points are located on the robot") is approximated here as a sphere of radius max_reach
-    around the robot base (world-frame contact points vs. a fixed per-flipper box would need
-    per-flipper body-frame geometry this project doesn't expose at this level) — d(c,
-    boundary of Omega) becomes the excess distance beyond max_reach."""
+    centred on the robot base (a fixed per-flipper box would need per-flipper body-frame
+    geometry this project doesn't expose at this level) — d(c, boundary of Omega) becomes
+    the excess distance beyond max_reach.
+
+    ctrac_contact.py returns ROBOT-frame points, so the base is the origin by construction
+    and Omega needs no centre argument. This used to take a `robot_pos`, left over from when
+    the points were world-frame; callers were passing target_points.mean(dim=1) — the
+    centroid of the ground-truth contacts — which centres Omega on a quantity that itself
+    moves with the prediction target instead of on the robot. Numerically it was near-inert
+    on clean data (measured max ||c|| = 0.674 m against max_reach 0.8, so both spellings
+    give 0), but it fired on corrupted rows and was simply the wrong region."""
     mask = _dynamic_mask(target_prob)
-    dist_from_robot = (pred_points - robot_pos.unsqueeze(1)).norm(dim=-1)  # (N, 4)
+    dist_from_robot = pred_points.norm(dim=-1)  # (N, 4) — base is the origin in robot frame
     excess = (dist_from_robot - max_reach).clamp_min(0.0)
     return (mask * excess).sum(dim=-1).mean()
