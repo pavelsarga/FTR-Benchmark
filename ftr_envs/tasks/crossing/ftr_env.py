@@ -603,10 +603,15 @@ class FtrEnv(DirectRLEnv):
         self.orientations[idx] = self._robot.data.root_quat_w[idx]
         self.robot_lin_velocities[idx] = self._robot.data.root_lin_vel_b[idx]
         self.robot_ang_velocities[idx] = self._robot.data.root_ang_vel_b[idx]
-        self.orientations_3[idx] = torch.stack([
-            torch.from_numpy(quat_to_euler_angles(q)).to(self.device)
-            for q in self.orientations[idx].cpu()
+        # dtype must be forced. quat_to_euler_angles returns float64, and while
+        # _post_physics_step's `self.orientations_3[:] = ...` is a slice copy that casts
+        # silently, this is an index_put_ (advanced indexing with env_ids), which refuses a
+        # dtype mismatch outright: "Index put requires the source and destination dtypes
+        # match, got Float for the destination and Double for the source."
+        euler = torch.stack([
+            torch.from_numpy(quat_to_euler_angles(q)) for q in self.orientations[idx].cpu()
         ])
+        self.orientations_3[idx] = euler.to(device=self.device, dtype=self.orientations_3.dtype)
         # flipper_positions is deliberately NOT re-read here. _reset_idx has just set it to
         # the freshly sampled initial_flipper_range angles and pushed them to sim as PD
         # TARGETS, while write_joint_state_to_sim zeroed the actual joint state — so
