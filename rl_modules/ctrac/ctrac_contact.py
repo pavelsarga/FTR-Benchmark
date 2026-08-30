@@ -31,9 +31,27 @@ force exceeds force_threshold).
 """
 import torch
 
-# Matches env.flipper_positions' column order [FL, FR, RL, RR] (see ftr.py / marv.py's
-# flipper_dof_idx_list unpacking: front_left_dof, front_right_dof, rear_left_dof, rear_right_dof).
-FLIPPER_NAMES = ("front_left", "front_right", "rear_left", "rear_right")
+# The PAPER's flipper order (Eq. 1: theta_fl, theta_rl, theta_rr, theta_fr), NOT
+# env.flipper_positions' native column order [FL, FR, RL, RR] (see ftr.py / marv.py's
+# flipper_dof_idx_list unpacking: front_left_dof, front_right_dof, rear_left_dof,
+# rear_right_dof).
+#
+# This tuple drives both the body-id lookup and the output stacking order, so it alone
+# defines the flipper axis of (contact_points, contact_prob) — and therefore of the
+# privileged observation slice and the C-VAE's contact targets/estimates.
+#
+# It is deliberately the paper order so that the contact axis lines up with the flipper
+# ANGLE axis in the partial observation, which ctrac_module.get_observations already
+# permutes into paper order (env.flipper_positions[:, [0, 2, 3, 1]]). Before this, obs
+# index 1 was the rear-left angle while contact index 1 was the front-right point — a
+# fixed permutation an MLP can absorb, but nothing downstream could index the two
+# consistently. It also happens to be the CCW winding _min_edge_signed_distance needs, so
+# _stabilization_penalty can now use the array as-is instead of re-stacking it.
+#
+# ⚠ Changing this order changes the packed observation layout. Any C-VAE dataset shard or
+# Stage-I checkpoint produced before it is stale: its contact columns / contact-head
+# outputs are in the old [FL, FR, RL, RR] order. Regenerate both.
+FLIPPER_NAMES = ("front_left", "rear_left", "rear_right", "front_right")
 NUM_WHEELS_PER_FLIPPER = 5
 
 # MARV wheel geometry (matches MarvWheelArticulation._BIG_RADIUS/_SMALL_RADIUS in
@@ -100,7 +118,9 @@ class CTRACContactExtractor:
 
     def compute(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns (contact_points (N,4,3) ROBOT-frame, contact_prob (N,4) in {0.0, 1.0}),
-        flipper order matching FLIPPER_NAMES / env.flipper_positions ([FL,FR,RL,RR]).
+        flipper order matching FLIPPER_NAMES, i.e. the paper's [FL,RL,RR,FR] (Eq. 1) —
+        the same order ctrac_module.get_observations packs the flipper angles in, and NOT
+        env.flipper_positions' native [FL,FR,RL,RR].
 
         Points are relative to the robot base and yaw-derotated (x forward, y left, z the
         height of the contact below the base), matching the paper's "4x2 relative coords of

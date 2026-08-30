@@ -226,11 +226,13 @@ class CTRACModule(RLModule):
     def _stabilization_penalty(self, contact_points: torch.Tensor, contact_prob: torch.Tensor) -> torch.Tensor:
         """rc (Eq. 7) — static-stability-margin approximation of the paper's literal
         energy-height NESM (see this module's docstring for why: no CoG/inertia data
-        exposed at this level). contact_points/prob: this step's ground truth, [FL,FR,RL,RR]
-        order (ctrac_contact.py's FLIPPER_NAMES), in the ROBOT frame."""
+        exposed at this level). contact_points/prob: this step's ground truth, in the paper's
+        [FL,RL,RR,FR] order (ctrac_contact.py's FLIPPER_NAMES) and the ROBOT frame."""
         cfg = self.cfg
-        fl, fr, rl, rr = (contact_points[:, i, :2] for i in range(4))
-        polygon = torch.stack([fl, rl, rr, fr], dim=1)  # CCW rectangle winding — see _min_edge_signed_distance
+        # [FL,RL,RR,FR] is already the CCW winding _min_edge_signed_distance requires, so the
+        # xy slice IS the support polygon — no re-stacking. (It used to arrive as native
+        # [FL,FR,RL,RR] and be reordered here; the reorder now happens once, at the source.)
+        polygon = contact_points[:, :, :2]
         # CoG approximated by the robot base (no separate CoG offset data). ctrac_contact.py
         # now returns robot-frame points, so the base is the origin by construction — keeping
         # env.positions here (correct only while the points were world-frame) would add the

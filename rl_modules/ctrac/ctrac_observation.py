@@ -6,7 +6,7 @@ from torchrl.data import Unbounded
 from marv_rl_training.observations import Observation, ObservationEncoder
 
 # Partial obs o_t (paper Eq. 1): fwd vel (1) + 4 flipper angles, raw rad, paper order
-# [FL,RL,RR,FR] (2) + roll/pitch/yaw (3) + goal-relative XY, body frame (2) + local
+# [FL,RL,RR,FR] (2)  <- the privileged contact points/probs below use this SAME order + roll/pitch/yaw (3) + goal-relative XY, body frame (2) + local
 # heightmap h^l_t, robot-centric x in [0.4,1.0] m ahead / y in [-0.5,0.5] m, 12x20 (240) +
 # 1 episode-just-reset flag (0.0/1.0 — lets ctrac_cvae.py's per-env observation-history
 # ring buffer and ctrac_module.py's posture-swing window reset themselves on a fresh
@@ -20,6 +20,12 @@ PARTIAL_DIM = 1 + 4 + 3 + 2 + 12 * 20 + 1  # = 251
 # separate tensordict keys): larger heightmap h^f_t, x in [-1.0,1.4] m / y in [-0.5,0.5] m,
 # same ~0.05 m/cell density as h^l_t -> 48x20 (960) + ground-truth contact points (4x3=12)
 # + contact existence probability (4).
+#
+# The contact flipper axis is the paper's [FL,RL,RR,FR] (ctrac_contact.py's FLIPPER_NAMES),
+# matching the flipper-ANGLE order in the partial slice above so index i means the same
+# physical flipper in both. It used to be env.flipper_positions' native [FL,FR,RL,RR], i.e.
+# obs index 1 was the rear-left angle while contact index 1 was the front-right point.
+# ⚠ Any dataset shard or Stage-I C-VAE checkpoint built before that change is stale.
 PRIVILEGED_HMAP_ROWS = 48
 PRIVILEGED_HMAP_COLS = 20
 PRIVILEGED_DIM = PRIVILEGED_HMAP_ROWS * PRIVILEGED_HMAP_COLS + 4 * 3 + 4  # = 976
