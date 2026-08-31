@@ -173,13 +173,62 @@ class _CTRACActorTDModule(TensorDictModule):
     def __init__(self, actor_net):
         super().__init__(actor_net, in_keys=[OBS_KEY], out_keys=["loc", "scale", "obs_history"])
 
+    # Counters for the two paths, so a run can prove which one it took (see forward).
+    _n_supplied = 0
+    _n_ringbuf = 0
+    _warned = False
+
     def forward(self, tensordict, *args, **kwargs):
         obs = tensordict.get(OBS_KEY)
+        partial = obs[..., :PARTIAL_DIM]
         hist = tensordict.get("obs_history", None)
+
+        # A supplied window is used ONLY if it is actually this batch's window. The old
+        # test was `hist is None`, on the assumption that the key does not exist during
+        # live collection -- it does. SyncDataCollector's shuttle carries the policy's own
+        # out_keys forward, so from the very first step "obs_history" is present as the
+        # collector's PRE-ALLOCATED ZEROS. The actor therefore took the "already carries
+        # it" branch on every collection step, never advanced the ring buffer, and wrote
+        # the zeros straight back.
+        #
+        # Confirmed on run 11449348's replay buffer, all 189,696 written rows: the root
+        # obs_history is exactly one distinct frame shared across every row, and that frame
+        # is all zeros -- 0/20000 sampled rows had obs_history[:, -1] == obs[:PARTIAL_DIM],
+        # and 20000/20000 windows had all 16 frames identical. ("next", "obs_history") looked
+        # healthier only because train_sac.py derives it as cat(hist[1:], next_partial),
+        # i.e. 15 zero frames plus one real one.
+        #
+        # So the C-VAE spent the entire run encoding a constant. With a constant input the
+        # only minimiser of L_prob is the base rate, which is exactly where it sat: the gap
+        # to cvae_prob_baseline averaged +0.0045 nats over 11M frames. Same for the actor,
+        # which received a constant z / c~ / c~prob for all 44 of those input dimensions.
+        #
+        # The check is the invariant itself rather than a mode flag: a real window's newest
+        # frame IS the current partial observation. That holds for a replay minibatch (which
+        # must supply its own window, since the per-env ring buffer is meaningless there)
+        # and fails for anything stale, zeroed or mis-shaped, with no coordination needed
+        # between the collector, SACLoss and the trainer.
+        use_supplied = (
+            hist is not None
+            and hist.shape[:-2] == partial.shape[:-1]
+            and hist.shape[-1] == partial.shape[-1]
+            and torch.equal(hist[..., -1, :], partial)
+        )
+        if use_supplied:
+            type(self)._n_supplied += 1
+        else:
+            type(self)._n_ringbuf += 1
+            if hist is not None and not type(self)._warned:
+                type(self)._warned = True
+                print(f"[ctrac] ignoring supplied obs_history (shape {tuple(hist.shape)}, "
+                      f"newest frame != current obs) and advancing the ring buffer instead; "
+                      f"this is the expected path during collection.", flush=True)
+            hist = None
+
         loc, scale, out_hist = self.module(obs, obs_history=hist)
         tensordict.set("loc", loc)
         tensordict.set("scale", scale)
-        tensordict.set("obs_history", out_hist if hist is None else hist)
+        tensordict.set("obs_history", out_hist)
         return tensordict
 
 
