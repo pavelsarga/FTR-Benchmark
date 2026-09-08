@@ -38,12 +38,12 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 import gymnasium as gym
-import omni.isaac.lab_tasks  # noqa: F401
+import omni.isaac.lab_tasks  # noqa: F401 - registers the IsaacLab task suite
 import torch
 from omni.isaac.lab_tasks.utils import parse_env_cfg
 
 import ftr_envs.tasks
-import ftr_envs.utils.omega_conf
+import ftr_envs.utils.omega_conf  # noqa: F401 - registers the OmegaConf resolvers
 
 import pandas as pd
 import matplotlib.pyplot as plt

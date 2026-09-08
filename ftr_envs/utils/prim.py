@@ -1,8 +1,7 @@
 import os
-from itertools import chain
 
 import omni.usd
-from omni.isaac.core.utils.prims import (
+from omni.isaac.core.utils.prims import (  # noqa: F401 - find_matching_prim_paths is re-exported
     create_prim,
     find_matching_prim_paths,
     get_prim_at_path,

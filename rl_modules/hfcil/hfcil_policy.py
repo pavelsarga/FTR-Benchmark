@@ -45,7 +45,7 @@ import torch.nn as nn
 
 from rl_modules.hfc.hfc_policy import HFCActionDecoder, HFCTerrainStateEncoder
 from rl_modules.hfc import hfc_policy as _hfc
-from rl_modules.hfcil.hfcil_transitions import NUM_STATES, STATE_SHORT_NAMES, legal_mask
+from rl_modules.hfcil.hfcil_transitions import NUM_STATES, legal_mask
 
 _log = logging.getLogger(__name__)
 

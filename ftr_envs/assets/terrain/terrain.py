@@ -10,7 +10,6 @@
 """
 import json
 import os
-import traceback
 from math import floor
 from pathlib import Path
 from functools import partial
@@ -222,12 +221,3 @@ class Terrain:
                 print(f"{name}:")
                 print(textwrap.indent(msg, " " * 4))
 
-if __name__=="__main__":
-    # regenerate map in scale
-    import numpy as np                                                                          
-    scale = 2         
-    cells = int(440 * scale)  # 880 for 2×                                                      
-    m = np.zeros((cells, cells), dtype=np.float32)
-    with open("src/FTR-benchmark/ftr_envs/assets/terrain/map/ground.map", "wb") as f:           
-        np.save(f, m) 
-        print("done")
