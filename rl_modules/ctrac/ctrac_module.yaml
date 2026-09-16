@@ -14,11 +14,31 @@ swing_alpha_roll: 1.0    # alpha_r (Eq. 6)
 swing_bmax_pitch_deg: 15.0   # b^max_p (Eq. 6) — literal paper value
 swing_bmax_roll_deg: 2.0     # b^max_r (Eq. 6) — literal paper value (deliberately tight)
 
-# Stabilization reward (Eq. 7). Static-stability-margin approximation of the paper's
-# literal energy-height NESM (see ctrac_module.py's docstring) — normalised by dividing by
-# this characteristic length before squashing through a sigmoid into (0, 1). Set to
-# roughly half MARV's flipper wheelbase (front-to-rear wheel-contact span).
-nesm_char_length: 0.3
+# Stabilization reward (Eq. 7).
+#
+# nesm = the paper's Normalized Energy Stability Margin (Hirose et al. 1998 / Garcia &
+#        De Santos 2005): the height the CoM must still rise to tip over the least-stable
+#        support-polygon edge. Depends on CoM HEIGHT, so it sees the tall-on-the-flipper-
+#        tips pose that a horizontal margin cannot.
+# ssm  = the static stability margin (McGhee & Frank 1968): the minimum horizontal distance
+#        from the CoG projection to the polygon boundary. A weaker criterion, blind to CoM
+#        height and maximised by parking flat — a comparison point, not a substitute.
+stability_metric: nesm
+
+# Divisor applied to the chosen margin before the sigmoid squashes it into (0, 1).
+#
+# NESM is a HEIGHT, so this is a height, and it is not interchangeable with the SSM length
+# below. 0.10 m is the scale at which MARV's margin actually operates: the CoM sits roughly
+# 0.15-0.20 m above the contact plane with a rotation radius near 0.3 m, so a comfortably
+# stable pose has a few centimetres of margin, not tens. Too large a value flattens the
+# sigmoid until the term is a near-constant offset carrying no gradient — check
+# `pan/stab_margin_m` on the first run and retune against its observed spread rather than
+# trusting this number.
+nesm_char_height: 0.10
+
+# Divisor for stability_metric: ssm only. Roughly half MARV's flipper wheelbase
+# (front-to-rear wheel-contact span).
+ssm_char_length: 0.3
 
 # Ground-truth contact extraction (ctrac_contact.py) — net contact force above this
 # (Newtons) counts a wheel as "in contact" for both the reward's NESM term and the C-VAE's

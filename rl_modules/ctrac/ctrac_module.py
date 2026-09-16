@@ -3,6 +3,9 @@ for Articulated Tracked Robots via Contact-Aware Reinforcement Learning"). See
 ctrac_contact.py for the ground-truth contact extraction this module's stabilization
 reward and (via ctrac_policy.py's C-VAE) supervised training targets both depend on.
 
+The stabilization term (Eq. 7) computes the paper's NESM — see _nesm_per_edge and
+_stabilization_penalty.
+
 Heightmap ranges: the paper's local/privileged heightmaps span robot-frame x in
 [0.4,1.0]/[-1.0,1.4] m. This project's existing per-step heightmap
 (env.current_frame_height_maps, the same 45x21 @ 0.05 m/cell grid every other module reads
@@ -89,6 +92,59 @@ def _crop_and_pad(raw: torch.Tensor, x_lo: float, x_hi: float, y_lo: float, y_hi
     return cropped
 
 
+def _nesm_per_edge(polygon: torch.Tensor, com: torch.Tensor) -> torch.Tensor:
+    """Signed Normalized Energy Stability Margin per support-polygon edge, in METRES.
+
+    NESM (Hirose et al. 1998, in the corrected form of Garcia & De Santos 2005) is the
+    energy needed to tip the robot about a support-polygon edge, normalised by weight — so
+    it comes out as the height the CoM must still rise before it passes over that edge. It
+    depends on how HIGH the CoM sits, not only on where it projects: a robot balanced tall
+    on its flipper tips has a small NESM even with the CoM projection dead-centre in the
+    polygon, which is exactly MARV's characteristic bad pose and the reason a purely
+    horizontal criterion is not adequate here.
+
+    polygon: (N,4,3) contact points, ROBOT frame, in the CCW winding [FL,RL,RR,FR] that
+    ctrac_contact.FLIPPER_NAMES already produces (see _min_edge_signed_distance's note on
+    why that ordering is load-bearing). com: (N,3), same frame. Both frames are yaw-only
+    derotated, so +z is still true vertical and gravity stays axis-aligned — the whole
+    construction depends on that and would be wrong in a fully body-fixed frame.
+
+    Per edge, with A the first vertex, e the edge direction and v = com - A:
+        v_perp = v - (v.e)e          vector from the rotation axis to the CoM, |v_perp| = R
+        cos psi = sqrt(1 - e_z^2)    edge inclination away from horizontal
+        NESM   = R cos psi - v_perp_z
+
+    That is algebraically identical to Garcia & De Santos' ``R (1 - cos theta) cos psi``
+    (substitute v_perp_z = R cos theta cos psi, which follows from resolving v_perp onto
+    the in-plane "up" direction) but avoids the asin/acos round trip, so it stays finite
+    and differentiable at the degenerate poses where R -> 0.
+
+    ⚠ SIGN. hector_stability_metrics' reference implementation
+    (normalized_energy_stability_margin.h, also used on the real robot) documents that it
+    "assumes the points are ordered CLOCKWISE when viewed from above", and takes its sign
+    from ``corner_to_com . normalize(edge x z)``, which for a given winding is the exact
+    NEGATIVE of the 2-D cross product _min_edge_signed_distance uses. Our polygon is wound
+    CCW, so that sign term must be inverted relative to hector's, and the convention here
+    is deliberately kept identical to _min_edge_signed_distance's instead: cross >= 0 means
+    the CoM is on the interior side of the edge, hence stable, hence positive. Getting this
+    backwards scores a stable robot as actively tipping, which is precisely the failure the
+    winding-order bug in _min_edge_signed_distance produced before it was pinned down —
+    test_ctrac_stability.py asserts both conventions directly so it cannot regress silently.
+    """
+    v0 = polygon
+    v1 = torch.roll(polygon, shifts=-1, dims=1)
+    edge = v1 - v0                                                  # (N,4,3)
+    e = edge / edge.norm(dim=-1, keepdim=True).clamp_min(1e-6)      # (N,4,3)
+    v = com.unsqueeze(1) - v0                                       # (N,4,3)
+    v_perp = v - (v * e).sum(dim=-1, keepdim=True) * e               # (N,4,3)
+    radius = v_perp.norm(dim=-1)                                     # (N,4)
+    cos_psi = (1.0 - e[..., 2] ** 2).clamp_min(0.0).sqrt()           # (N,4)
+    # Height the CoM still has to gain to sit directly over the axis; 0 exactly at balance.
+    nesm = radius * cos_psi - v_perp[..., 2]                         # (N,4), >= 0 unsigned
+    cross = edge[..., 0] * v[..., 1] - edge[..., 1] * v[..., 0]      # (N,4), CCW interior > 0
+    return torch.where(cross >= 0, nesm, -nesm)
+
+
 def _min_edge_signed_distance(polygon: torch.Tensor, point: torch.Tensor) -> torch.Tensor:
     """polygon: (N,4,2) vertices in a consistent winding order (here [FL,RL,RR,FR], a
     non-self-intersecting CCW rectangle winding — NOT env.flipper_positions' [FL,FR,RL,RR]
@@ -99,10 +155,8 @@ def _min_edge_signed_distance(polygon: torch.Tensor, point: torch.Tensor) -> tor
     "inside" the support polygon), for a CCW-wound polygon under the standard 2D cross
     product sign convention. Verified against a synthetic unit-square case: CoG at the
     square's center returns +0.5 (half the square's side) with this vertex order, vs -0.5
-    with [FL,FR,RR,RL] — confirming the CW ordering previously used here inverted the sign,
-    so a robot standing stably on all 4 flippers was scored as if its CoG were outside its
-    support base (rc pinned near -1 almost every step, ~-0.8 to -0.9 observed in real 13M-
-    step training run rew.csv — not a real instability signal, a sign bug).
+    with [FL,FR,RR,RL] — so a CW winding inverts the sign and scores a robot standing
+    stably on all 4 flippers as if its CoG were outside its support base.
     """
     v0 = polygon
     v1 = torch.roll(polygon, shifts=-1, dims=1)
@@ -124,6 +178,54 @@ class CTRACModule(RLModule):
         self._pitch_hist = torch.zeros(env.num_envs, k + 1, device=env.device)
         kf = int(self.cfg.flipper_activity_window)
         self._flipper_hist = torch.zeros(env.num_envs, kf + 1, env.flipper_num, device=env.device)
+        # Per-body masses, resolved lazily on first use — see _com_robot_frame.
+        self._body_masses: torch.Tensor | None = None
+        # Surfaced by crossing_env._get_rewards as `pan/*` (it reads `pan_diagnostics` off
+        # whatever module is active, generically). Apt enough here: C-TRAC is Pan et al. too.
+        self.pan_diagnostics: dict[str, torch.Tensor] = {}
+
+    def _com_robot_frame(self) -> torch.Tensor:
+        """(N,3) mass-weighted centre of mass of the whole articulation, in the same
+        yaw-derotated robot frame ctrac_contact.py returns the contact points in.
+
+        Built from IsaacLab's own per-body data: ``data.default_mass`` (N, num_bodies),
+        populated from ``root_physx_view.get_masses()``, against ``data.body_pos_w``, which
+        ctrac_contact.py and pan_shared.py already read for their own geometry.
+
+        Approximation: this weights each body's LINK ORIGIN, not that link's own internal
+        centre-of-mass offset (this IsaacLab version exposes no per-body COM pose, only
+        ``default_inertia`` about it). For MARV's many small, roughly symmetric wheel links
+        the two differ by millimetres — but it is an estimate, and `pan/com_height_m` is
+        logged so it can be sanity-checked against the real robot rather than assumed.
+        """
+        env = self.env
+        robot = env._robot
+        if self._body_masses is None:
+            masses = robot.data.default_mass
+            if masses is None:
+                raise RuntimeError(
+                    "_com_robot_frame: robot.data.default_mass is None — cannot compute a "
+                    "mass-weighted CoM, and therefore cannot compute NESM. Set "
+                    "stability_metric: ssm in ctrac_module.yaml to fall back to the "
+                    "horizontal margin."
+                )
+            self._body_masses = masses.to(device=env.device, dtype=robot.data.body_pos_w.dtype)
+
+        masses = self._body_masses                                   # (N, num_bodies)
+        body_pos_w = robot.data.body_pos_w                           # (N, num_bodies, 3)
+        if masses.shape[0] != body_pos_w.shape[0]:                   # broadcast a single template
+            masses = masses[:1].expand(body_pos_w.shape[0], -1)
+        total = masses.sum(dim=-1, keepdim=True).clamp_min(1e-6)     # (N,1)
+        com_w = (body_pos_w * masses.unsqueeze(-1)).sum(dim=1) / total
+
+        # World -> robot frame, yaw only — identical convention to
+        # CTRACContactExtractor.compute(), so the CoM and the polygon share one frame.
+        rel = com_w - env.positions                                  # (N,3)
+        yaw = env.orientations_3[:, 2]
+        cos_y, sin_y = torch.cos(yaw), torch.sin(yaw)
+        x_b = cos_y * rel[:, 0] + sin_y * rel[:, 1]
+        y_b = -sin_y * rel[:, 0] + cos_y * rel[:, 1]
+        return torch.stack([x_b, y_b, rel[:, 2]], dim=-1)
 
     def calc_scanned_height_maps(self, base_robot_frame=True):
         env = self.env
@@ -224,26 +326,51 @@ class CTRACModule(RLModule):
         return torch.where(worsening, torch.full_like(avg_swing, -1.0), -avg_swing)
 
     def _stabilization_penalty(self, contact_points: torch.Tensor, contact_prob: torch.Tensor) -> torch.Tensor:
-        """rc (Eq. 7) — static-stability-margin approximation of the paper's literal
-        energy-height NESM (see this module's docstring for why: no CoG/inertia data
-        exposed at this level). contact_points/prob: this step's ground truth, in the paper's
-        [FL,RL,RR,FR] order (ctrac_contact.py's FLIPPER_NAMES) and the ROBOT frame."""
+        """rc (Eq. 7) — the paper's Normalized Energy Stability Margin, normalised into
+        [-1, 0]. contact_points/prob: this step's ground truth, in the paper's [FL,RL,RR,FR]
+        order (ctrac_contact.py's FLIPPER_NAMES) and the ROBOT frame.
+
+        ``stability_metric: ssm`` selects the static stability margin (McGhee & Frank 1968)
+        instead — the minimum horizontal distance from the CoG projection to the
+        support-polygon boundary. It is a weaker criterion, blind to CoM height and
+        maximised by parking flat, and is offered only as a comparison point.
+
+        The ``undefined`` branch is the paper's own ``if Enesm ∄ -> -1``. Note it is
+        evaluated on the ground-truth existence flags, so it fires whenever fewer than three
+        FLIPPERS (not wheels) register contact — which on MARV includes the legitimate
+        mid-climb pose with the front pair in the air. `pan/stab_undefined_frac` is logged
+        so it can be checked how often this branch, rather than the margin itself, is what
+        determines the term; if it dominates, the margin is barely being consulted.
+        """
         cfg = self.cfg
-        # [FL,RL,RR,FR] is already the CCW winding _min_edge_signed_distance requires, so the
-        # xy slice IS the support polygon — no re-stacking. (It used to arrive as native
-        # [FL,FR,RL,RR] and be reordered here; the reorder now happens once, at the source.)
-        polygon = contact_points[:, :, :2]
-        # CoG approximated by the robot base (no separate CoG offset data). ctrac_contact.py
-        # now returns robot-frame points, so the base is the origin by construction — keeping
-        # env.positions here (correct only while the points were world-frame) would add the
-        # robot's world coordinate to a robot-frame polygon, putting the CoG far outside it.
-        cog_xy = torch.zeros_like(polygon[:, 0, :])
+        # [FL,RL,RR,FR] is already the CCW winding both margins require, so the points ARE
+        # the support polygon — no re-stacking here. env.flipper_positions' native
+        # [FL,FR,RL,RR] would cross diagonally; the ordering is fixed once, at the source.
+        metric = str(cfg.get("stability_metric", "nesm")).lower()
 
-        margin = _min_edge_signed_distance(polygon, cog_xy)  # (N,)
-        norm_margin = torch.sigmoid(margin / cfg.nesm_char_length)  # Norm(Emin_nesm) in [0,1]
-        rc = norm_margin - 1.0
+        if metric == "ssm":
+            # ctrac_contact.py returns robot-frame points, so the base is the origin by
+            # construction — keeping env.positions here (correct only while the points were
+            # world-frame) would add the robot's world coordinate to a robot-frame polygon.
+            polygon_xy = contact_points[:, :, :2]
+            raw = _min_edge_signed_distance(polygon_xy, torch.zeros_like(polygon_xy[:, 0, :]))
+            char = float(cfg.ssm_char_length)
+        elif metric == "nesm":
+            com = self._com_robot_frame()
+            raw = _nesm_per_edge(contact_points, com).min(dim=-1).values  # (N,) metres
+            char = float(cfg.nesm_char_height)
+            self.pan_diagnostics["com_height_m"] = com[:, 2].detach()
+        else:
+            raise ValueError(
+                f"ctrac_module.yaml: stability_metric must be 'nesm' or 'ssm', got {metric!r}"
+            )
 
-        undefined = contact_prob.sum(dim=-1) < 3  # Enesm undefined — fewer than 3 wheels actually touching
+        rc = torch.sigmoid(raw / char) - 1.0  # Norm(Emin_nesm) - 1, in [-1, 0]
+
+        undefined = contact_prob.sum(dim=-1) < 3
+        self.pan_diagnostics["stab_margin_m"] = raw.detach()
+        self.pan_diagnostics["stab_undefined_frac"] = undefined.float().detach()
+        self.pan_diagnostics["contacts_down"] = contact_prob.sum(dim=-1).detach()
         return torch.where(undefined, torch.full_like(rc, -1.0), rc)
 
     def get_reward_components(self) -> dict[str, torch.Tensor]:
