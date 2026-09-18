@@ -20,7 +20,7 @@ sys.modules.setdefault("ftr_envs", pkg)
 sys.modules.setdefault("ftr_envs.utils", utils)
 sys.modules["ftr_envs.utils.torch"] = m
 
-from rl_modules.pan_shared import PanRewardMixin, FLIPPER_UP_SIGN
+from rl_modules.pan_shared import PanRewardMixin
 
 N = 3
 class Cfg:

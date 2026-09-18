@@ -4,7 +4,7 @@ import omni.isaac.lab.sim as sim_utils
 from omni.isaac.lab.actuators import ImplicitActuatorCfg
 from omni.isaac.lab.assets import ArticulationCfg
 
-from ftr_envs.assets.ftr import FTR_SIM_CFG  # noqa: F401 — re-exported for convenience
+from ftr_envs.assets.ftr import FTR_SIM_CFG  # noqa: F401 - re-exported for convenience
 
 _NUM_WHEELS = 5  # must match num_wheels passed to marv_to_usd.py
 

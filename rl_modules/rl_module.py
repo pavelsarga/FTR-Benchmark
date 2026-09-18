@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import einops
 import torch
 from omni.isaac.lab.envs import VecEnvObs
 

@@ -27,9 +27,6 @@ class MarvRLFlatObservation(Observation):
         if opts.get("flipper_style", False):
             self.dim = 4119  # 4096 hmap + 15 state + 8 prev_action (4 track vels + 4 flipper angles)
 
-    def __call__(self, prev_state, action, prev_state_der, curr_state):
-        raise NotImplementedError("MarvRLFlatObservation is populated directly by FtrTorchRLEnv._step / _reset.")
-
     def get_spec(self) -> Unbounded:
         return Unbounded(
             shape=(self.env.batch_size[0], self.dim),

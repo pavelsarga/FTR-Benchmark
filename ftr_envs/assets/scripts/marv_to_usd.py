@@ -17,7 +17,6 @@ NUM_WHEELS must match the _NUM_WHEELS constant in ftr_envs/assets/marv.py (defau
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -71,7 +70,6 @@ def _generate_urdf(xacro_path: Path, xacro_args: list) -> str:
     with tempfile.NamedTemporaryFile(suffix=".urdf", delete=False) as f:
         urdf_path = f.name
 
-    args_str = " ".join(xacro_args)
     # Source the workspace to make $(find ...) resolve, then call xacro via
     # python3.12 so the entry-point lookup issue with the Jazzy binary is bypassed.
     bash_cmd = (
@@ -82,7 +80,7 @@ def _generate_urdf(xacro_path: Path, xacro_args: list) -> str:
         f"sys.argv = ['xacro', '{xacro_path}', {', '.join(repr(a) for a in xacro_args)}, '-o', '{urdf_path}']; "
         f"xacro.main()\""
     )
-    print(f"Generating URDF from xacro …")
+    print("Generating URDF from xacro …")
     subprocess.run(["bash", "-c", bash_cmd], check=True)
     print(f"URDF written to {urdf_path}")
     return urdf_path

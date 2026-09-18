@@ -8,11 +8,9 @@
 ====================================
 
 """
-from typing import Sequence
 
 import numpy as np
 import torch
-import torch.nn as nn
 
 from omni.isaac.lab.envs import VecEnvObs
 from omni.isaac.lab.sim import PhysxCfg

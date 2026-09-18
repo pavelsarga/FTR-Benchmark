@@ -9,10 +9,9 @@
 
 """
 import logging
-import os
 from functools import cached_property
 from itertools import cycle
-from typing import Any, Sequence
+from typing import Sequence
 from collections import deque
 
 import carb
@@ -22,9 +21,8 @@ import torch
 from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
 from omni.isaac.core.world import World
 from omni.isaac.lab.assets import ArticulationCfg
-from omni.isaac.lab.envs import DirectRLEnv, DirectRLEnvCfg, VecEnvObs, VecEnvStepReturn
+from omni.isaac.lab.envs import DirectRLEnv, DirectRLEnvCfg
 from omni.isaac.lab.scene import InteractiveSceneCfg
-from omni.isaac.lab.terrains import TerrainImporterCfg
 from omni.isaac.lab.utils import configclass
 
 from ftr_envs.assets.articulation.ftr import FtrWheelArticulation

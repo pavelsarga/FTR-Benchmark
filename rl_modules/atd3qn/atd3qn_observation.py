@@ -31,9 +31,6 @@ class ATD3QNObservation(Observation):
     dim = 18   # 15 (terrain) + 2 (front/rear flipper angle) + 1 (chassis pitch)
                # requires sync_flipper_control: true
 
-    def __call__(self, prev_state, action, prev_state_der, curr_state):
-        raise NotImplementedError("FtrFlatObservation is populated directly by FtrTorchRLEnv._step / _reset.")
-
     def get_spec(self) -> Unbounded:
         return Unbounded(
             shape=(self.env.batch_size[0], self.dim),

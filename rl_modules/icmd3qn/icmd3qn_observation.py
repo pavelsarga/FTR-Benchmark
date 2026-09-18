@@ -21,9 +21,6 @@ class ICMD3QNObservation(Observation):
     supports_vecnorm = False
     dim = 18
 
-    def __call__(self, prev_state, action, prev_state_der, curr_state):
-        raise NotImplementedError("ICMD3QNObservation is populated directly by FtrTorchRLEnv._step / _reset.")
-
     def get_spec(self) -> Unbounded:
         return Unbounded(
             shape=(self.env.batch_size[0], self.dim),
