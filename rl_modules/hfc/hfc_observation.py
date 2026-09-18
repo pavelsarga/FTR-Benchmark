@@ -31,9 +31,6 @@ class HFCObservation(Observation):
     supports_vecnorm = False
     dim = 24  # 15 (terrain) + 4 (flipper angles, raw) + 3 (roll, roll rate, pitch, raw) + 1 (fwd vel, raw) + 1 (reset flag)
 
-    def __call__(self, prev_state, action, prev_state_der, curr_state):
-        raise NotImplementedError("HFCObservation is populated directly by FtrTorchRLEnv._step / _reset.")
-
     def get_spec(self) -> Unbounded:
         return Unbounded(
             shape=(self.env.batch_size[0], self.dim),
