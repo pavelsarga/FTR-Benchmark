@@ -1,0 +1,208 @@
+# mixed_v2_straight — the straight-drive training course that replaces
+# custom_mixed. Design notes: docs/terrain_v2_design.md in MARV_RL.
+#
+# What changed and why, in one screen:
+#   * custom_mixed was saturated (0.946 overall; columns 0-3 ~100% on every
+#     row) — every kept row is re-graded so column 0 is about where column
+#     4 used to be, and the top column sits just inside MARV's measured limit
+#     (single step-up 0.35, pit climb-out 0.35, mound 0.60, stairs 0.20/step).
+#   * every obstacle in custom_mixed was an axis-aligned box. Half the rows
+#     here are sloped or curved (ramps, side slopes, crossing ramps, waves,
+#     round logs, a tilted pallet) — surfaces that need the flippers to be
+#     modulated, not set once.
+#   * asymmetric features (anything diagonal, the half platform) alternate
+#     handedness by column (`mirror_alternate`) — custom_mixed's diagonal
+#     trunk scored 0.97 at -45 deg and 0.31 at +45 deg: a handed policy.
+#   * every tile is driven in BOTH directions (`bidirectional`, RoboCupRescue
+#     scoring) and from three lateral spawn offsets (`spawn_lateral_jitter`).
+#   * short features are paired inside one tile (`sequence`) so the approach
+#     speed to the second one is a decision.
+#   * no turning here: the offset gates live in mixed_v2_full only.
+#
+#   python generate_terrain.py terrain_config_mixed_v2_straight.yaml \
+#       --output-dir ../FTR-Benchmark/ftr_envs/assets/terrain --overwrite
+
+name: mixed_v2_straight
+seed: 2026
+cell_size: 0.05
+repeats: 10
+bidirectional: true
+spawn_lateral_jitter: 0.15
+
+tile:
+  width: 8.8            # travel/X direction
+  depth: 3.333333333333  # lane/Y direction
+
+border_width: 2.0
+arena_band: {wall_height: 1.0, wall_width: 0.2}   # flat 2 m ring + fence, so overshooting robots stay on ground
+base_z: 0.5
+
+camera:
+  position: [-40, 40, 25]
+  target: [0, 5, -5]
+
+rows:
+  # ── vertical steps (MARV limit with the 60 deg flipper up-limit: 0.30 up, 0.30
+  #    climb-out — measured on marv_calib: 100% at 0.30, 0% at 0.333, both policies) ──
+  - type: raised_platform
+    min_height: 0.20
+    max_height: 0.30
+    extra: {platform_width: 2.0}
+
+  - type: lowered_platform
+    name: pit
+    min_height: 0.18
+    max_height: 0.30
+    extra: {pit_width: 1.6}
+
+  - type: double_trench
+    min_height: 0.15
+    max_height: 0.28
+    extra: {trench_width: 1.0, middle_width: 1.0}
+
+  # drive-through trench: wide and shallow — strictly wider than deep_gap
+  - type: widening_trench
+    name: drive_trench
+    extra: {trench_depth: 0.25, min_width: 0.6, max_width: 1.5}
+
+  # bridging gap: narrow and deep — falling in ends the episode
+  - type: widening_trench
+    name: deep_gap
+    extra: {trench_depth: 0.6, min_width: 0.15, max_width: 0.45}
+
+  # ── things smaller than the robot ─────────────────────────────────────────
+  # the narrow beam the robot straddles belly-first (Cihala's "log / narrow wall")
+  - type: log_crossing
+    min_height: 0.10
+    max_height: 0.28
+    extra: {log_length: 1.5, log_width: 0.25}
+
+  - type: twin_rails
+    min_height: 0.15
+    max_height: 0.30
+    extra: {rail_width: 0.4, gap_width: 1.5, wall_height: 0.25}
+
+  - type: round_log
+    min_height: 0.15
+    max_height: 0.28
+
+  - type: round_log
+    name: diagonal_log
+    min_height: 0.15
+    max_height: 0.25
+    extra: {min_yaw: 20, max_yaw: 45, mirror_alternate: true}
+
+  - type: diagonal_trunk
+    min_height: 0.20
+    max_height: 0.30
+    extra: {min_angle: 15, max_angle: 45, trunk_width: 0.35, wall_height: 0.2, mirror_alternate: true}
+
+  # ── stairs: rise 0.10 -> 0.17 on MIXED treads (0.26 / 0.28 / 0.30). On marv_calib the
+  #    custom_mixed policies (trained on 0.30 treads only) fell from 0.83 to 0 between 0.10
+  #    and 0.16 rise on a 0.28 tread while doing 0.15 rise on 0.30 treads at ~0.95 — tread
+  #    overfitting, which is what the mix is for ──────────────────────────────────────
+  - type: raised_stairs
+    min_height: 0.40          # 4 x 0.10
+    max_height: 0.68          # 4 x 0.17
+    extra: {n_steps: 4, step_length: 0.30, platform_length: 0.6}
+
+  - type: lowered_stairs
+    min_height: 0.40
+    max_height: 0.64
+    extra: {n_steps: 4, step_length: 0.28, platform_length: 0.6}
+
+  - type: raised_stairs
+    name: steep_stairs        # 0.26 tread: 23 -> 32 deg
+    min_height: 0.44          # 4 x 0.11
+    max_height: 0.64          # 4 x 0.16
+    extra: {n_steps: 4, step_length: 0.26, platform_length: 0.6}
+
+  - type: stairs_ascent_descent
+    min_height: 0.40
+    max_height: 0.68
+    extra: {n_steps: 4, step_length: 0.30}
+
+  - type: diagonal_stairs
+    min_height: 0.30          # 3 x 0.10
+    max_height: 0.45          # 3 x 0.15
+    extra: {n_steps: 3, step_length: 0.30, platform_length: 0.6, min_yaw: 15, max_yaw: 35, mirror_alternate: true}
+
+  # ── fields (traversable by construction: neighbour rule) ──────────────────
+  - type: cobblestones
+    min_height: 0.15
+    max_height: 0.30
+    extra: {grid_n: 11, max_step: 0.12}
+
+  - type: cobblestones
+    name: coarse_cobbles
+    min_height: 0.15
+    max_height: 0.30
+    extra: {grid_n: 5, max_step: 0.15}
+
+  - type: stepfield
+    min_height: 0.15
+    max_height: 0.30
+
+  - type: rock_formation
+    min_height: 0.25
+    max_height: 0.36
+    extra: {grid_n: 8, n_levels: 6, dropout: 0.35, coarse_n: 5}
+
+  - type: diagonal_pyramid
+    min_height: 0.20
+    max_height: 0.45
+    extra: {n_rows: 13, hidden_layers: 4}
+
+  - type: half_platform
+    min_height: 0.15
+    max_height: 0.30
+    extra: {field_size: 3.0}
+
+  - type: stump
+    min_height: 0.20
+    max_height: 0.35
+
+  # three overlapping bumps staggered left/right: never flat, one track always higher
+  - type: stump_field
+    min_height: 0.20
+    max_height: 0.35
+    extra: {mirror_alternate: true, mesh_stride: 2}
+
+  # ── slopes (new: nothing in custom_mixed was sloped) ──────────────────────
+  - type: pitch_ramp
+    name: ridge_ramp
+    extra: {shape: A, min_angle: 8, max_angle: 30, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
+
+  - type: pitch_ramp
+    name: valley_ramp
+    extra: {shape: V, min_angle: 8, max_angle: 30, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
+
+  - type: diagonal_ramp
+    extra: {min_angle: 10, max_angle: 22, min_yaw: 15, max_yaw: 35, mirror_alternate: true, mesh_stride: 2}
+
+  - type: cross_slope
+    extra: {min_roll: 8, max_roll: 25, mirror_alternate: true, mesh_stride: 2}
+
+  - type: crossing_ramps
+    extra: {min_angle: 4, max_angle: 10, wedge_length: 0.6, n_wedges: 6, mirror_alternate: true}
+
+  - type: wave
+    min_height: 0.05
+    max_height: 0.20
+    extra: {wavelength: 1.2, n_periods: 3, min_yaw: 0, max_yaw: 25, mirror_alternate: true, mesh_stride: 2}
+
+  - type: tilted_pallet
+    extra: {min_pitch: 8, max_pitch: 18, min_yaw: 10, max_yaw: 30, mirror_alternate: true}
+
+  # ── sequences: two short features, ~1.9 m apart ───────────────────────────
+  - type: sequence
+    name: log_then_step
+    extra:
+      parts:
+        - {type: flat_patch, width: 1.2}
+        - {type: round_log, min_height: 0.15, max_height: 0.22, width: 2.6}
+        - {type: raised_platform, min_height: 0.15, max_height: 0.28, width: 2.4, extra: {platform_width: 1.0}}
+        - {type: flat_patch, width: 2.6}
+
+  # ── rest lane ─────────────────────────────────────────────────────────────
+  - type: flat_patch

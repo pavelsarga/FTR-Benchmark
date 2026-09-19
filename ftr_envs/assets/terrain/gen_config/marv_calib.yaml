@@ -1,0 +1,85 @@
+# MARV calibration course — NOT a training terrain. Every row grades one
+# obstacle class from "known easy" past "known impossible" so a policy eval
+# (or a teleop pass) shows exactly where MARV's physical limit is. The
+# `mixed_v2_*` courses cap each class just inside the limit measured here.
+#
+# Prior from cur_mixed (experiments/thesis/best_long): single step-up passes
+# at 0.35 and never at 0.40; pit climb-out passes at 0.35, never at 0.40;
+# stairs pass to 0.20 rise. The rows below extend past those points on
+# purpose — the top columns are EXPECTED to fail.
+#
+#   python generate_terrain.py terrain_config_marv_calib.yaml \
+#       --output-dir ../FTR-Benchmark/ftr_envs/assets/terrain --overwrite
+#   bash scripts/eval_auto.sh <run_dir> --map marv_calib --num_envs 256 --repeats 20 \
+#       --output_dir logs/policy_eval --eval_id calib_<policy> --headless
+
+name: marv_calib
+seed: 7
+cell_size: 0.05
+repeats: 10
+bidirectional: true          # each tile also driven in reverse: a step-up becomes a step-down
+
+tile:
+  width: 8.8
+  depth: 3.333333333333
+
+border_width: 2.0
+arena_band: {wall_height: 1.0, wall_width: 0.2}   # flat 2 m ring + fence, so overshooting robots stay on ground
+base_z: 0.5
+
+camera:
+  position: [-40, 40, 25]
+  target: [0, 5, -5]
+
+rows:
+  # single vertical step up (then down) — expected cliff at 0.35-0.40
+  - type: raised_platform
+    name: step_up
+    min_height: 0.20
+    max_height: 0.50
+    extra: {platform_width: 2.0}
+
+  # pit: drop D, 1.6 m floor, climb D back out — expected cliff at 0.35-0.40
+  - type: lowered_platform
+    name: pit
+    min_height: 0.20
+    max_height: 0.50
+
+  # one-way single step: ascending on even repeats, descending on odd — the
+  # descending tiles (and the reverse legs) isolate the pure DROP limit
+  - type: stairs_ascent_descent
+    name: single_step_oneway
+    min_height: 0.20
+    max_height: 0.60
+    extra: {n_steps: 1, step_length: 0.3, entry_margin: 3.0}
+
+  # bridging gap: deep enough that falling in ends the episode
+  - type: widening_trench
+    name: deep_gap
+    extra: {trench_depth: 0.6, min_width: 0.15, max_width: 0.60}
+
+  # stairs: rise 0.10 -> 0.24 on a 0.28 tread (20 -> 41 deg)
+  - type: raised_stairs
+    name: stairs
+    min_height: 0.40
+    max_height: 0.96
+    extra: {n_steps: 4, step_length: 0.28, platform_length: 0.6}
+
+  # A ramp 5 -> 40 deg (crest height 0.10 -> 1.0 over a 1.2 m run)
+  - type: pitch_ramp
+    name: ramp_a
+    extra: {shape: A, min_angle: 5, max_angle: 40, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
+
+  # V ramp 5 -> 40 deg (trough depth 0.10 -> 1.0)
+  - type: pitch_ramp
+    name: ramp_v
+    extra: {shape: V, min_angle: 5, max_angle: 40, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
+
+  # side slope 5 -> 30 deg
+  - type: cross_slope
+    extra: {min_roll: 5, max_roll: 30, mesh_stride: 2}
+
+  # round log, diameter 0.15 -> 0.40
+  - type: round_log
+    min_height: 0.15
+    max_height: 0.40

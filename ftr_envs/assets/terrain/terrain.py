@@ -96,10 +96,10 @@ class MapHelper:
 
 class Terrain:
 
-    def __init__(self, name, prim_path="/World/terrain"):
+    def __init__(self, name, prim_path="/World/terrain", decor: bool = False):
         self.prim_path = prim_path
         terrain_dir = Path(__file__).parent
-        with open(terrain_dir / "config" / f"{name}.yaml") as f:
+        with open(terrain_dir / "config" / f"{name}.yaml", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
         self.obstacles = dict()
         if "obstacles" in self.config:
@@ -112,6 +112,14 @@ class Terrain:
             default_usd = terrain_dir / "usd" / f"{name}.usd"
             assert default_usd.exists()
             self.obstacles["terrain"] = {"path": str(default_usd)}
+
+        # Visual markings (tile lines, spawn/goal marks, path lines, hazard frames) live in
+        # a separate, collision-free `usd/<name>_decor.usd` written by the terrain generator.
+        # Only loaded on request (FtrEnvCfg.terrain_decor, set by the GUI eval wrappers) so
+        # headless training never spends stage-load time on ~thousands of decal prims.
+        decor_usd = terrain_dir / "usd" / f"{name}_decor.usd"
+        if decor and decor_usd.exists():
+            self.obstacles["decor"] = {"path": str(decor_usd)}
 
         if "task_info" in self.config:
             self.birth = [self.config["task_info"]]

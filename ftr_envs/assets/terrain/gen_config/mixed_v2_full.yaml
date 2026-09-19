@@ -1,0 +1,271 @@
+name: mixed_v2_full
+rows:
+- type: raised_platform
+  min_height: 0.2
+  max_height: 0.3
+  extra:
+    platform_width: 2.0
+- type: lowered_platform
+  name: pit
+  min_height: 0.18
+  max_height: 0.3
+  extra:
+    pit_width: 1.6
+- type: double_trench
+  min_height: 0.15
+  max_height: 0.28
+  extra:
+    trench_width: 1.0
+    middle_width: 1.0
+- type: widening_trench
+  name: drive_trench
+  extra:
+    trench_depth: 0.25
+    min_width: 0.6
+    max_width: 1.5
+- type: widening_trench
+  name: deep_gap
+  extra:
+    trench_depth: 0.6
+    min_width: 0.15
+    max_width: 0.45
+- type: log_crossing
+  min_height: 0.1
+  max_height: 0.28
+  extra:
+    log_length: 1.5
+    log_width: 0.25
+- type: twin_rails
+  min_height: 0.15
+  max_height: 0.3
+  extra:
+    rail_width: 0.4
+    gap_width: 1.5
+    wall_height: 0.25
+- type: round_log
+  min_height: 0.15
+  max_height: 0.28
+- type: round_log
+  name: diagonal_log
+  min_height: 0.15
+  max_height: 0.25
+  extra:
+    min_yaw: 20
+    max_yaw: 45
+    mirror_alternate: true
+- type: diagonal_trunk
+  min_height: 0.2
+  max_height: 0.3
+  extra:
+    min_angle: 15
+    max_angle: 45
+    trunk_width: 0.35
+    wall_height: 0.2
+    mirror_alternate: true
+- type: raised_stairs
+  min_height: 0.4
+  max_height: 0.68
+  extra:
+    n_steps: 4
+    step_length: 0.3
+    platform_length: 0.6
+- type: lowered_stairs
+  min_height: 0.4
+  max_height: 0.64
+  extra:
+    n_steps: 4
+    step_length: 0.28
+    platform_length: 0.6
+- type: raised_stairs
+  name: steep_stairs
+  min_height: 0.44
+  max_height: 0.64
+  extra:
+    n_steps: 4
+    step_length: 0.26
+    platform_length: 0.6
+- type: stairs_ascent_descent
+  min_height: 0.4
+  max_height: 0.68
+  extra:
+    n_steps: 4
+    step_length: 0.3
+- type: diagonal_stairs
+  min_height: 0.3
+  max_height: 0.45
+  extra:
+    n_steps: 3
+    step_length: 0.3
+    platform_length: 0.6
+    min_yaw: 15
+    max_yaw: 35
+    mirror_alternate: true
+- type: cobblestones
+  min_height: 0.15
+  max_height: 0.3
+  extra:
+    grid_n: 11
+    max_step: 0.12
+- type: cobblestones
+  name: coarse_cobbles
+  min_height: 0.15
+  max_height: 0.3
+  extra:
+    grid_n: 5
+    max_step: 0.15
+- type: stepfield
+  min_height: 0.15
+  max_height: 0.3
+- type: rock_formation
+  min_height: 0.25
+  max_height: 0.36
+  extra:
+    grid_n: 8
+    n_levels: 6
+    dropout: 0.35
+    coarse_n: 5
+- type: diagonal_pyramid
+  min_height: 0.2
+  max_height: 0.45
+  extra:
+    n_rows: 13
+    hidden_layers: 4
+- type: half_platform
+  min_height: 0.15
+  max_height: 0.3
+  extra:
+    field_size: 3.0
+- type: stump
+  min_height: 0.2
+  max_height: 0.35
+- type: stump_field
+  min_height: 0.2
+  max_height: 0.35
+  extra:
+    mirror_alternate: true
+    mesh_stride: 2
+- type: pitch_ramp
+  name: ridge_ramp
+  extra:
+    shape: A
+    min_angle: 8
+    max_angle: 30
+    ramp_length: 1.2
+    plateau_length: 1.0
+    mesh_stride: 2
+- type: pitch_ramp
+  name: valley_ramp
+  extra:
+    shape: V
+    min_angle: 8
+    max_angle: 30
+    ramp_length: 1.2
+    plateau_length: 1.0
+    mesh_stride: 2
+- type: diagonal_ramp
+  extra:
+    min_angle: 10
+    max_angle: 22
+    min_yaw: 15
+    max_yaw: 35
+    mirror_alternate: true
+    mesh_stride: 2
+- type: cross_slope
+  extra:
+    min_roll: 8
+    max_roll: 25
+    mirror_alternate: true
+    mesh_stride: 2
+- type: crossing_ramps
+  extra:
+    min_angle: 4
+    max_angle: 10
+    wedge_length: 0.6
+    n_wedges: 6
+    mirror_alternate: true
+- type: wave
+  min_height: 0.05
+  max_height: 0.2
+  extra:
+    wavelength: 1.2
+    n_periods: 3
+    min_yaw: 0
+    max_yaw: 25
+    mirror_alternate: true
+    mesh_stride: 2
+- type: tilted_pallet
+  extra:
+    min_pitch: 8
+    max_pitch: 18
+    min_yaw: 10
+    max_yaw: 30
+    mirror_alternate: true
+- type: sequence
+  name: log_then_step
+  extra:
+    parts:
+    - type: flat_patch
+      width: 1.2
+    - type: round_log
+      min_height: 0.15
+      max_height: 0.22
+      width: 2.6
+    - type: raised_platform
+      min_height: 0.15
+      max_height: 0.28
+      width: 2.4
+      extra:
+        platform_width: 1.0
+    - type: flat_patch
+      width: 2.6
+- type: flat_patch
+- type: offset_gate
+  goal_lateral_offset:
+  - 0.3
+  - 0.5
+  extra:
+    n_gates: 1
+    min_offset: 0.3
+    max_offset: 0.5
+    opening: 0.9
+    mirror_alternate: true
+    side_walls:
+      height: 0.2
+      width: 0.15
+- type: offset_gate
+  name: chicane
+  goal_lateral_offset:
+  - 0.3
+  - 0.5
+  extra:
+    n_gates: 2
+    gate_spacing: 2.5
+    min_offset: 0.3
+    max_offset: 0.5
+    opening: 0.9
+    mirror_alternate: true
+    side_walls:
+      height: 0.2
+      width: 0.15
+- type: flat_patch
+  name: flat_turn
+  goal_lateral_offset:
+  - 0.4
+  - 1.0
+  extra:
+    side_walls:
+      height: 0.2
+      width: 0.15
+tile:
+  width: 8.8
+  depth: 3.333333333333
+cell_size: 0.05
+base_z: 0.5
+border_width: 2.0
+repeats: 10
+seed: 2026
+arena_band:
+  wall_height: 1.0
+  wall_width: 0.2
+bidirectional: true
+spawn_lateral_jitter: 0.15

@@ -74,6 +74,20 @@ class FtrEnvCfg(DirectRLEnvCfg):
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=0.0, replicate_physics=True)
     terrain_name = "cur_mixed"
+    # Load the course's collision-free visual markings (`usd/<terrain>_decor.usd`, if the
+    # generator wrote one). Off by default: purely cosmetic, and headless training should not
+    # pay the stage-load cost. scripts/lib/eval_run.sh switches it on for non-headless evals.
+    terrain_decor: bool = False
+    # Sky colour of the viewport, cosmetic: the RTX viewport shows the dome light's colour as
+    # the background (the renderer's background-composite setting is not honoured by this
+    # Isaac build), so a coloured sky means a coloured dome light. To keep the terrain from
+    # being tinted, `sun_intensity` adds a neutral white distant light that does most of the
+    # illuminating while the dome is turned down. None = historical neutral grey dome only.
+    # e.g. env_cfg_overrides.sky_color=[0.53,0.81,0.98] dome_light_intensity=900 sun_intensity=3000
+    # Headless runs render nothing, so none of this costs anything there.
+    sky_color: tuple[float, float, float] | None = None
+    dome_light_intensity: float = 2000.0
+    sun_intensity: float = 0.0
 
     # robot
     robot: ArticulationCfg = FTR_CFG
@@ -259,7 +273,7 @@ class FtrEnv(DirectRLEnv):
         self.cfg.noise["linear_vel_noise_std"] = self.cfg.linear_vel_noise_std
         self.cfg.noise["orientation_noise_std"] = self.cfg.orientation_noise_std
 
-        self.terrain_cfg = Terrain(cfg.terrain_name)
+        self.terrain_cfg = Terrain(cfg.terrain_name, decor=bool(getattr(cfg, "terrain_decor", False)))
 
         self.sync_flipper_control = self.cfg.robot_config["sync_flipper_control"]
         self.only_front_flipper = self.cfg.robot_render_config["flipper"]["only_render_front_flipper"]
@@ -509,8 +523,12 @@ class FtrEnv(DirectRLEnv):
         self.scene.filter_collisions(global_prim_paths=[self.terrain_cfg.prim_path])
 
         # add lights
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        dome_color = tuple(float(v) for v in self.cfg.sky_color) if self.cfg.sky_color is not None else (0.75, 0.75, 0.75)
+        light_cfg = sim_utils.DomeLightCfg(intensity=float(self.cfg.dome_light_intensity), color=dome_color)
         light_cfg.func("/World/Light", light_cfg)
+        if self.cfg.sun_intensity > 0:
+            sun_cfg = sim_utils.DistantLightCfg(intensity=float(self.cfg.sun_intensity), color=(1.0, 1.0, 1.0), angle=1.0)
+            sun_cfg.func("/World/Sun", sun_cfg, orientation=(0.9659, 0.2588, 0.0, 0.0))  # ~30 deg off vertical
 
     def _reset_idx(self, env_ids: Sequence[int]):
         super()._reset_idx(env_ids)

@@ -33,6 +33,25 @@ def point_in_rotated_ellipse(x, y, h, k, a, b, theta):
 
 
 @torch.jit.script
+def out_of_range_rect(pos, start, target, x_slack: float = 1.0, half_width: float = 10.0 / 6.0):
+    """Axis-aligned rectangle the size of the obstacle "spot": along the path axis it
+    spans start..target plus `x_slack` on both ends (the birth points sit `birth_clearance`
+    = 1 m in from the tile edges, so 1.0 puts the bound exactly at the tile edge), across
+    it `half_width` either side of the start/target midpoint (half a 3.33 m lane). The
+    path axis is whichever world axis start->target mostly runs along, so a lateral
+    goal offset (`goal_lateral_offset`) or spawn jitter does not tilt the box."""
+    d = (target - start)[:, :2]
+    along_x = d[:, 0].abs() >= d[:, 1].abs()
+    a = torch.where(along_x, pos[:, 0], pos[:, 1])
+    a0 = torch.where(along_x, start[:, 0], start[:, 1])
+    a1 = torch.where(along_x, target[:, 0], target[:, 1])
+    lo = torch.minimum(a0, a1) - x_slack
+    hi = torch.maximum(a0, a1) + x_slack
+    c = torch.where(along_x, (start[:, 1] + target[:, 1]) / 2, (start[:, 0] + target[:, 0]) / 2)
+    b = torch.where(along_x, pos[:, 1], pos[:, 0])
+    return (a < lo) | (a > hi) | ((b - c).abs() > half_width)
+
+
 def out_of_range(pos, start, target, semi_major_slack: float = 3.0, semi_minor_slack: float = 2.0):
     center = (start + target) / 2
     op = (target - start)[:, :2]
@@ -145,6 +164,13 @@ class CrossingEnvCfg(FtrEnvCfg):
     # semi_minor_slack: lateral freedom beyond d_max/4 on either side.
     out_of_range_semi_major_slack: float = 2.0
     out_of_range_semi_minor_slack: float = 1.0
+    # "ellipse" (the legacy bound above — its minor axis, d/4 + 1 m, lets a robot wander
+    # ~2.7 m sideways, i.e. into the neighbouring lane) or "rectangle": the obstacle spot
+    # itself, start..target + x_slack along the path and +- half_width across it. The
+    # v2 courses use the rectangle; old runs keep the ellipse for reproducibility.
+    out_of_range_shape: str = "ellipse"
+    out_of_range_rect_x_slack: float = 1.0
+    out_of_range_rect_half_width: float = 10.0 / 6.0
 
     # Shock-magnitude termination threshold (m/s²).
     # Episode is terminated (fail) when linear acceleration exceeds this value.
@@ -438,10 +464,16 @@ class CrossingEnv(FtrEnv):
             torch.abs(torch.rad2deg(self.orientations_3[:, :2])) >= self.cfg.rollover_threshold_deg, dim=-1
         )
         # Out of range
-        out_range_idx = out_of_range(
-            self.positions, self.start_positions, self.target_positions,
-            self.cfg.out_of_range_semi_major_slack, self.cfg.out_of_range_semi_minor_slack,
-        )
+        if self.cfg.out_of_range_shape == "rectangle":
+            out_range_idx = out_of_range_rect(
+                self.positions, self.start_positions, self.target_positions,
+                self.cfg.out_of_range_rect_x_slack, self.cfg.out_of_range_rect_half_width,
+            )
+        else:
+            out_range_idx = out_of_range(
+                self.positions, self.start_positions, self.target_positions,
+                self.cfg.out_of_range_semi_major_slack, self.cfg.out_of_range_semi_minor_slack,
+            )
         # Timeout
         timeout_idx = self.episode_length_buf >= self.max_episode_length
 
