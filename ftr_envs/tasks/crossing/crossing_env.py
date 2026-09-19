@@ -101,6 +101,41 @@ class CrossingEnvCfg(FtrEnvCfg):
     # clearance_coef < 0 → penalty; None → disabled.
     clearance_coef: float | None = None
 
+    # Traversal quality (TQ) — the evaluation metric of Číhala et al. (ICRA 2025) in its
+    # three-channel form (ICRA 2027): TQ = (q_s + q_t + q_c) / 3 in (0, 1], where each channel
+    # is a physical quantity mapped to a score with 1 = perfect,
+    #   shock      q_s = 1 - N(|a|, s_max / 2)          N(x, x̂) = 2 / (1 + e^{-x/x̂}) - 1
+    #   tilt       q_t = 1 - N(∠(body z, world z), t_max / 2)
+    #   clearance  q_c = 1 - min(|d - d_d| / d_d, 1)    d = chassis-to-ground gap, d_d = flat-ground gap
+    # The per-step signals are always computed and logged (tq/*); tq_coef switches them on as
+    # a reward, r = -tq_coef * (1 - TQ_step) — a penalty that is zero at perfect quality, so
+    # it carries no incentive to prolong the episode. The episode-level metric (worst sample
+    # per tq_bin_length of progress, averaged over bins, mean of the three channels) is
+    # finalised when an episode ends and surfaced in extras["tq_episode*"] for eval.
+    tq_coef: float | None = None
+    # Sigmoid references x_max (the metric uses x_max / 2 as x̂). s_max follows score.py's
+    # value for the robot rather than the DART figure of the paper: |a| here is the finite
+    # difference of the body velocity, which has no gravity pedestal and no rigid-contact
+    # spikes of hundreds of m/s². t_max is the paper's 50 deg.
+    tq_shock_max: float = 20.0
+    tq_tilt_max_deg: float = 50.0
+    # d_d: chassis-to-ground gap on flat ground with level flippers. The paper's real robot
+    # measures 7.3 cm; the sim value is calibrated with the flat-ground probe (see the marv_rl
+    # module docstring) and overridden per config.
+    tq_clearance_ref: float = 0.073
+    # Underside of the chassis below the base-link origin (m): base_link/collisions and the
+    # chassis visual both bottom out at z = -0.044 in marv.usd.
+    tq_chassis_bottom_offset: float = 0.044
+    # Ground sampled on a rows x cols grid of height-map cells (5 cm) under the chassis —
+    # the paper's 10 x 8 cells = 0.50 x 0.40 m footprint. The gap is the minimum over cells,
+    # with the underside plane tilted by the body's roll and pitch.
+    tq_footprint_cells: tuple[int, int] = (10, 8)
+    # Score |d - d_d| on both sides (paper): parking the belly needlessly high is not
+    # quality either. False = the one-sided ramp clip(d / d_d, 0, 1) of ICRA 2025.
+    tq_clearance_two_sided: bool = True
+    # Progress bin of the episode metric (m along the start->target axis).
+    tq_bin_length: float = 0.25
+
     # Action bonus
     # Encourages the policy to take non-zero actions rather than freezing.
     # Set to None to disable.
@@ -108,6 +143,11 @@ class CrossingEnvCfg(FtrEnvCfg):
     flipper_action_bonus_coef: float | None = None
     # Blend between actual velocity and intended velocity from policy output.s
     lin_action_ratio: float = 0.5
+    # Saturating variant of the action bonus: the blended forward speed (normalised by
+    # track_vel_max) is rewarded linearly up to this value and flat above it, so the bonus
+    # stops pulling toward full throttle once the robot moves at the target pace. None keeps
+    # the cubic form, which is ~0 below half throttle and maximal only at full throttle.
+    action_bonus_target: float | None = None
 
     # Per-step penalty applied every step (negative → constant reward penalty).
     step_penalty: float = 0.0
@@ -229,6 +269,15 @@ class CrossingEnv(FtrEnv):
         self._timeout_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._raw_accel_buf: list = []
         self._raw_accel_steps: int = 0
+        # Traversal-quality per-step channels (badness in [0, 1], 0 = perfect) and the
+        # episode accumulators: current progress bin, worst badness inside it, and the sum /
+        # count of finished bins' (1 - worst) per channel [shock, tilt, clearance].
+        self.tq_badness = torch.zeros((self.num_envs, 3), device=self.device)
+        self.tq_step = torch.ones(self.num_envs, device=self.device)
+        self._tq_bin_idx = torch.full((self.num_envs,), -1, dtype=torch.long, device=self.device)
+        self._tq_bin_worst = torch.zeros((self.num_envs, 3), device=self.device)
+        self._tq_bin_sum = torch.zeros((self.num_envs, 3), device=self.device)
+        self._tq_bin_count = torch.zeros(self.num_envs, device=self.device)
         self.rl_module: RLModule = RLMODULE_REGISTRY[self.cfg.module_name](self)
 
     def _get_observations(self) -> VecEnvObs:
@@ -280,6 +329,7 @@ class CrossingEnv(FtrEnv):
         ]
         self.clearance = self.positions[:, 2] - self.track_wheel_radius - ground_height
         self.flipper_torques = self._robot.data.applied_torque[:, self._flipper_joint_ids].abs()  # (N, 4)
+        self._update_traversal_quality()
 
         # ------------------------------------------------------------------
         # 1. Sum the module's individual reward components. Step penalty and terminal
@@ -356,6 +406,23 @@ class CrossingEnv(FtrEnv):
         reward_info["clearance/height_max"] = cl_max
         reward_info["clearance/height_min"] = cl_min
 
+        # ── Traversal quality group ────────────────────────────────────────
+        # Per-step channel scores (1 - badness) and their mean, over healthy robots, plus
+        # the footprint gap itself. The episode-level metric is in extras["tq_episode*"].
+        reward_info["tq/step_quality"] = _hmean(self.tq_step)
+        reward_info["tq/shock"] = _hmean(1.0 - self.tq_badness[:, 0])
+        reward_info["tq/tilt"] = _hmean(1.0 - self.tq_badness[:, 1])
+        reward_info["tq/clearance"] = _hmean(1.0 - self.tq_badness[:, 2])
+        reward_info["tq/tilt_deg"] = _hmean(self.tq_tilt_deg)
+        gap_mean, gap_max, gap_min = _hstats(self.tq_gap)
+        reward_info["tq/gap"] = gap_mean
+        reward_info["tq/gap_max"] = gap_max
+        reward_info["tq/gap_min"] = gap_min
+        _ep = self.extras["tq_episode"]
+        _ep_done = ~torch.isnan(_ep)
+        if _ep_done.any():  # only on steps where an episode ended, so the logged mean is not NaN
+            reward_info["tq/episode_quality"] = _ep[_ep_done].mean().item()
+
         # ── Classic state group ────────────────────────────────────────────
         # Linear velocity magnitude
         lin_vel_mag = self.robot_lin_velocities.norm(dim=-1)
@@ -419,6 +486,92 @@ class CrossingEnv(FtrEnv):
     
     def calc_scanned_height_maps(self, base_robot_frame=True):
         return self.rl_module.calc_scanned_height_maps(base_robot_frame)
+
+    @staticmethod
+    def _tq_sigmoid(x: torch.Tensor, x_hat: float) -> torch.Tensor:
+        """N(x, x̂) of the metric: 0 at x = 0, ~0.46 at x = x̂, -> 1 for large x."""
+        return 2.0 / (1.0 + torch.exp(-x / x_hat)) - 1.0
+
+    def _update_traversal_quality(self) -> None:
+        """Per-step TQ channels and the distance-binned episode metric.
+
+        Runs inside _get_rewards, i.e. after _get_dones and before _reset_idx, so the
+        episodes ending this step are finalised from their last sample and then reset.
+        """
+        cfg = self.cfg
+        N = self.num_envs
+
+        # -- tilt: angle between the body z axis and world z, from the root quaternion (w, x, y, z)
+        q = self.orientations
+        qw, qx, qy, qz = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+        r31 = 2.0 * (qx * qz - qw * qy)
+        r32 = 2.0 * (qy * qz + qw * qx)
+        r33 = 1.0 - 2.0 * (qx * qx + qy * qy)
+        self.tq_tilt_deg = torch.rad2deg(torch.acos(r33.clamp(-1.0, 1.0)))
+
+        # -- clearance: minimum gap between the (tilted) chassis underside and the ground over
+        # the footprint cells of the yaw-aligned height map. Row 0 is the front (+x), column 0
+        # the robot's right (-y); cells are `cell` metres.
+        H, W = self.height_map_size
+        cell = self.height_map_length[0] / H
+        fr, fc = cfg.tq_footprint_cells
+        r0, c0 = H // 2 - fr // 2, W // 2 - fc // 2
+        ground = self.current_frame_height_maps[:, r0:r0 + fr, c0:c0 + fc]
+        xs = (H // 2 - torch.arange(r0, r0 + fr, device=self.device, dtype=torch.float32)) * cell
+        ys = (torch.arange(c0, c0 + fc, device=self.device, dtype=torch.float32) - W // 2) * cell
+        underside = (
+            self.positions[:, 2, None, None]
+            + r31[:, None, None] * xs[None, :, None]
+            + r32[:, None, None] * ys[None, None, :]
+            - r33[:, None, None] * cfg.tq_chassis_bottom_offset
+        )
+        self.tq_gap = (underside - ground).flatten(1).min(dim=1).values
+
+        d_ref = cfg.tq_clearance_ref
+        if cfg.tq_clearance_two_sided:
+            b_clear = ((self.tq_gap - d_ref).abs() / d_ref).clamp(max=1.0)
+        else:
+            b_clear = 1.0 - (self.tq_gap / d_ref).clamp(0.0, 1.0)
+        b_shock = self._tq_sigmoid(self.accel_mag, cfg.tq_shock_max / 2.0)
+        b_tilt = self._tq_sigmoid(self.tq_tilt_deg, cfg.tq_tilt_max_deg / 2.0)
+        badness = torch.stack([b_shock, b_tilt, b_clear], dim=-1)
+        badness = torch.nan_to_num(badness, nan=1.0, posinf=1.0, neginf=1.0)
+        self.tq_badness.copy_(badness)
+        self.tq_step.copy_(1.0 - badness.mean(dim=-1))
+
+        # -- episode metric: worst badness per progress bin, mean over bins, mean over channels
+        axis = (self.target_positions[:, :2] - self.start_positions[:, :2])
+        axis = axis / axis.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        progress = ((self.positions[:, :2] - self.start_positions[:, :2]) * axis).sum(dim=-1)
+        bin_idx = torch.floor(progress / cfg.tq_bin_length).long().clamp(min=0)
+        new_bin = bin_idx != self._tq_bin_idx
+        opened = self._tq_bin_idx >= 0
+        flush = new_bin & opened
+        self._tq_bin_sum[flush] += 1.0 - self._tq_bin_worst[flush]
+        self._tq_bin_count[flush] += 1.0
+        self._tq_bin_worst[new_bin] = 0.0
+        self._tq_bin_idx.copy_(bin_idx)
+        torch.maximum(self._tq_bin_worst, badness, out=self._tq_bin_worst)
+
+        done = self.reset_terminated | self.reset_time_outs
+        ep = torch.full((N, 3), float("nan"), device=self.device)
+        if done.any():
+            ssum = self._tq_bin_sum[done] + (1.0 - self._tq_bin_worst[done])
+            cnt = self._tq_bin_count[done] + 1.0
+            ep[done] = ssum / cnt[:, None]
+        self.extras["tq_episode_shock"] = ep[:, 0]
+        self.extras["tq_episode_tilt"] = ep[:, 1]
+        self.extras["tq_episode_clearance"] = ep[:, 2]
+        self.extras["tq_episode"] = ep.mean(dim=-1)
+
+    def _reset_idx(self, env_ids):
+        super()._reset_idx(env_ids)
+        if not hasattr(self, "_tq_bin_idx"):  # first reset runs from FtrEnv.__init__
+            return
+        self._tq_bin_idx[env_ids] = -1
+        self._tq_bin_worst[env_ids] = 0.0
+        self._tq_bin_sum[env_ids] = 0.0
+        self._tq_bin_count[env_ids] = 0.0
 
     def _flush_raw_accel(self) -> None:
         if not self._raw_accel_buf or self.cfg.log_raw_accel_path is None:

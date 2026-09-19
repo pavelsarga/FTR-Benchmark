@@ -137,9 +137,21 @@ class MarvRLModule(RLModule):
         if cfg.clearance_coef is not None:
             components["clearance"] = -cfg.clearance_coef * (1 / (1 + torch.exp(-((env.clearance - 0.2) / 0.02))))
 
+        # Traversal-quality penalty: -coef * (1 - TQ_step), the per-step form of the
+        # evaluation metric (shock, tilt, clearance channels — see CrossingEnvCfg.tq_coef).
+        # Meant to replace the roll/pitch/rate/shock/clearance terms above, not to stack on
+        # them: they all score the same three physical quantities.
+        if cfg.tq_coef is not None:
+            components["traversal_quality"] = -cfg.tq_coef * (1.0 - env.tq_step)
+
         # Action bonus
         if cfg.action_bonus_coef is not None:
-            v_norm = (torch.Tensor(env.actions[:, 0]).pow(3)*cfg.lin_action_ratio + torch.Tensor(env.robot_lin_velocities[:, 0] / env.track_vel_max).pow(3)*(1-cfg.lin_action_ratio))  # body-frame forward velocity
+            v_cmd = env.actions[:, 0]
+            v_body = env.robot_lin_velocities[:, 0] / env.track_vel_max  # body-frame forward velocity
+            if cfg.action_bonus_target is not None:
+                v_norm = (v_cmd * cfg.lin_action_ratio + v_body * (1 - cfg.lin_action_ratio)) / cfg.action_bonus_target
+            else:
+                v_norm = v_cmd.pow(3) * cfg.lin_action_ratio + v_body.pow(3) * (1 - cfg.lin_action_ratio)
             components["action_bonus"] = cfg.action_bonus_coef * torch.clamp(v_norm, max=1.0, min=-1.0)
 
         # Flipper action bonus
