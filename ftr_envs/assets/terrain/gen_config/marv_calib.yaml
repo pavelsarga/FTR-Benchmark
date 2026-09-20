@@ -37,13 +37,14 @@ rows:
     name: step_up
     min_height: 0.20
     max_height: 0.50
-    extra: {platform_width: 2.0}
+    extra: {edge_lip: true, platform_width: 2.0}
 
   # pit: drop D, 1.6 m floor, climb D back out — expected cliff at 0.35-0.40
   - type: lowered_platform
     name: pit
     min_height: 0.20
     max_height: 0.50
+    extra: {edge_lip: true}
 
   # one-way single step: ascending on even repeats, descending on odd — the
   # descending tiles (and the reverse legs) isolate the pure DROP limit
@@ -51,35 +52,48 @@ rows:
     name: single_step_oneway
     min_height: 0.20
     max_height: 0.60
-    extra: {n_steps: 1, step_length: 0.3, entry_margin: 3.0}
+    extra: {edge_lip: true, n_steps: 1, step_length: 0.3, entry_margin: 3.0}
 
   # bridging gap: deep enough that falling in ends the episode
   - type: widening_trench
     name: deep_gap
-    extra: {trench_depth: 0.6, min_width: 0.15, max_width: 0.60}
+    extra: {edge_lip: true, trench_depth: 0.6, min_width: 0.15, max_width: 0.60}
 
   # stairs: rise 0.10 -> 0.24 on a 0.28 tread (20 -> 41 deg)
   - type: raised_stairs
     name: stairs
     min_height: 0.40
     max_height: 0.96
-    extra: {n_steps: 4, step_length: 0.28, platform_length: 0.6}
+    extra: {edge_lip: true, n_steps: 4, step_length: 0.28, platform_length: 0.6}
 
   # A ramp 5 -> 40 deg (crest height 0.10 -> 1.0 over a 1.2 m run)
   - type: pitch_ramp
     name: ramp_a
-    extra: {shape: A, min_angle: 5, max_angle: 40, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
+    extra: {friction: 2.0, shape: A, min_angle: 5, max_angle: 40, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
 
   # V ramp 5 -> 40 deg (trough depth 0.10 -> 1.0)
   - type: pitch_ramp
     name: ramp_v
-    extra: {shape: V, min_angle: 5, max_angle: 40, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
+    extra: {friction: 2.0, shape: V, min_angle: 5, max_angle: 40, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
 
   # side slope 5 -> 30 deg
   - type: cross_slope
-    extra: {min_roll: 5, max_roll: 30, mesh_stride: 2}
+    extra: {friction: 2.0, min_roll: 5, max_roll: 30, mesh_stride: 2}
+
+  # steep hill 25 -> 50 deg on 1.8 m ramps (0.84 -> 2.15 m tall): where does the climb / crest fail
+  - type: steep_hill
+    extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 25, max_angle: 50, ramp_length: 1.8, crest_length: 0.6, mesh_stride: 1}
+
+  # twisted 25 -> 45 deg with 10 -> 20 deg roll swings
+  - type: twisted_hill
+    extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 25, max_angle: 45, min_roll: 10, max_roll: 20, ramp_length: 1.8, crest_length: 0.6, mirror_alternate: true, mesh_stride: 1}
+
+  # bumpy 25 -> 45 deg with 0.08 -> 0.20 m bumps
+  - type: bumpy_hill
+    extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 25, max_angle: 45, min_bump: 0.08, max_bump: 0.20, ramp_length: 1.8, crest_length: 0.6, mesh_stride: 1}
 
   # round log, diameter 0.15 -> 0.40
   - type: round_log
     min_height: 0.15
     max_height: 0.40
+    extra: {edge_lip: true, friction: 3.0}

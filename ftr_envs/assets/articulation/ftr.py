@@ -30,9 +30,15 @@ from ftr_envs.utils.prim import (
 )
 
 
-L = 0.3600
+L = 0.3600  # legacy skid-steer track spacing used by set_v_w (FTR body width). MARV's real gauge is
+# 0.496 m; the env passes it via `track_gauge` (FtrEnvCfg.track_gauge) — kept at 0.36 by default so
+# policies trained before that knob existed keep their turning behaviour.
 
 class FtrWheelArticulation(Articulation):
+    # Skid-steer geometry/limits used by set_v_w; the env overwrites them from its cfg
+    # (track_gauge, track_vel_limit) right after construction.
+    track_gauge: float = L
+    track_vel_limit: float | None = None  # per-track |v| saturation (m/s); None = unlimited (legacy)
     # Pivot-to-wheel5 distance (m), wheel1 sits at the pivot (distance 0) for every
     # flipper on both FTR and MARV — see load_wheel_pivot_distances(). Measured directly
     # from ftr_v1.usd (front_left_flipper pivot -> FL5 world position).
@@ -70,9 +76,16 @@ class FtrWheelArticulation(Articulation):
         v = v_w[:, 0]
         w = v_w[:, 1]
 
+        # differential drive: right = v + w*gauge/2, left = v - w*gauge/2. A pivot (v = 0) at the
+        # full w therefore runs the two sides at +-w*gauge/2 — the gauge and w limit decide how
+        # hard the robot can ever skid-steer, not the drive.
         vels = torch.zeros(v_w.shape, device=v_w.device)
-        vels[:, 0] = (2 * v + w * L) / 2
-        vels[:, 1] = (2 * v - w * L) / 2
+        vels[:, 0] = v + w * self.track_gauge / 2
+        vels[:, 1] = v - w * self.track_gauge / 2
+        if self.track_vel_limit is not None:
+            # the real tracks saturate: a full turn while driving at full speed slows the
+            # inner track instead of over-speeding the outer one
+            vels = vels.clamp(-self.track_vel_limit, self.track_vel_limit)
 
         return self.set_right_and_left_velocities(vels, indices=indices)
 

@@ -86,7 +86,7 @@ class FtrEnvCfg(DirectRLEnvCfg):
     # e.g. env_cfg_overrides.sky_color=[0.53,0.81,0.98] dome_light_intensity=900 sun_intensity=3000
     # Headless runs render nothing, so none of this costs anything there.
     sky_color: tuple[float, float, float] | None = None
-    dome_light_intensity: float = 2000.0
+    dome_light_intensity: float = 1200.0  # was 2000 (the upstream default); 40 % dimmer reads better on the white obstacles
     sun_intensity: float = 0.0
 
     # robot
@@ -110,7 +110,13 @@ class FtrEnvCfg(DirectRLEnvCfg):
     marv_flipper_back_down_deg: float | None = None
     track_vel_max: float = 0.7     # max |v| (m/s)
     track_vel_scale: float = 1.0   # multiplicative scale applied to track velocities before sending to robot
-    track_ang_vel_max: float = 1.0   # max |w| (rad/s)
+    track_ang_vel_max: float = 1.0   # max |w| (rad/s): the policy's w action ([-1, 1]) is scaled by this
+    # Skid-steer geometry (FtrWheelArticulation.set_v_w): track spacing, None = legacy 0.36 m
+    # (MARV's real gauge is 0.496), and per-track saturation after mixing v and w (None = none;
+    # the forward command keeps its own track_vel_max cap). The legacy 1.0 rad/s x 0.36 m ran a
+    # full pivot at +-0.18 m/s — a 4x under-scaled command, the first half of "MARV cannot turn".
+    track_gauge: float | None = None
+    track_vel_limit: float | None = None
     fixed_forward_vel: float | None = None  # if set, overrides policy linear velocity with this constant (m/s)
 
     # ctrac only: attaches a real ContactSensor for ground-truth per-flipper contact
@@ -386,7 +392,9 @@ class FtrEnv(DirectRLEnv):
                     self.last_action[:, 0] = self.cfg.fixed_forward_vel
             else:
                 track_v = self.actions[:, 0:1].clamp(-self.track_vel_max, self.track_vel_max)
-            track_w = self.actions[:, 1:2].clamp(-self.track_ang_vel_max, self.track_ang_vel_max)
+            # w action is in [-1, 1] (the policies' action spec); identical to the old
+            # clamp(+-track_ang_vel_max) for the default 1.0, a real scale for anything else
+            track_w = self.actions[:, 1:2].clamp(-1.0, 1.0) * self.track_ang_vel_max
             real_track_cmd = add_noise(torch.cat([track_v, track_w], dim=-1), std=self.baselink_drive_noise_std)
             self._robot.set_v_w(real_track_cmd)
 
@@ -465,6 +473,14 @@ class FtrEnv(DirectRLEnv):
             robot_cfg.spawn.activate_contact_sensors = True
 
         self._robot = RobotClass(robot_cfg, device=self.device)
+        if self.cfg.track_gauge is not None:
+            self._robot.track_gauge = float(self.cfg.track_gauge)
+        if self.cfg.track_vel_limit is not None:
+            self._robot.track_vel_limit = float(self.cfg.track_vel_limit)
+        print(f"[FtrEnv] skid-steer: gauge={self._robot.track_gauge:.3f} m, w_max={self.cfg.track_ang_vel_max} rad/s "
+              f"-> pivot track speed +-{self.cfg.track_ang_vel_max * self._robot.track_gauge / 2:.2f} m/s, "
+              f"per-track limit={'%.2f' % self.cfg.track_vel_limit if self.cfg.track_vel_limit is not None else 'off'}",
+              flush=True)
         self._robot.set_robot_env(self.cfg.robot_config, self.cfg.robot_render_config)
         self._robot.load_all_wheel_radius()
         self.scene.articulations["robot"] = self._robot

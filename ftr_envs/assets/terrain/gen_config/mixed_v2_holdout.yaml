@@ -39,115 +39,115 @@ rows:
   - type: raised_platform
     min_height: 0.22
     max_height: 0.29
-    extra: {platform_width: 1.4}
+    extra: {edge_lip: true, platform_width: 1.4}
 
   - type: lowered_platform
     name: pit
     min_height: 0.20
     max_height: 0.28
-    extra: {pit_width: 2.0}
+    extra: {edge_lip: true, pit_width: 2.0}
 
   - type: double_trench
     min_height: 0.18
     max_height: 0.28
-    extra: {trench_width: 0.8, middle_width: 1.4}
+    extra: {edge_lip: true, trench_width: 0.8, middle_width: 1.4}
 
   - type: widening_trench
     name: drive_trench
-    extra: {trench_depth: 0.22, min_width: 0.8, max_width: 1.3}
+    extra: {edge_lip: true, trench_depth: 0.22, min_width: 0.8, max_width: 1.3}
 
   - type: widening_trench
     name: deep_gap
-    extra: {trench_depth: 0.5, min_width: 0.20, max_width: 0.40}
+    extra: {edge_lip: true, trench_depth: 0.5, min_width: 0.20, max_width: 0.40}
 
   - type: log_crossing
     min_height: 0.12
     max_height: 0.26
-    extra: {log_length: 2.0, log_width: 0.30}
+    extra: {edge_lip: true, log_length: 2.0, log_width: 0.30}
 
   - type: twin_rails
     min_height: 0.18
     max_height: 0.30
-    extra: {rail_width: 0.3, gap_width: 1.2, wall_height: 0.25}
+    extra: {edge_lip: true, rail_width: 0.3, gap_width: 1.2, wall_height: 0.25}
 
   - type: round_log
     min_height: 0.18
     max_height: 0.26
-    extra: {min_yaw: 10, max_yaw: 30, mirror_alternate: true}
+    extra: {edge_lip: true, min_yaw: 10, max_yaw: 30, mirror_alternate: true}
 
   - type: diagonal_trunk
     min_height: 0.22
     max_height: 0.28
-    extra: {min_angle: -20, max_angle: -40, trunk_width: 0.4, wall_height: 0.2, mirror_alternate: true}
+    extra: {friction: 3.0, min_angle: -20, max_angle: -40, trunk_width: 0.4, wall_height: 0.2, mirror_alternate: true}
 
   - type: raised_stairs
     min_height: 0.50          # 5 x 0.10
     max_height: 0.80          # 5 x 0.16
-    extra: {n_steps: 5, step_length: 0.27, platform_length: 0.5}
+    extra: {edge_lip: true, n_steps: 5, step_length: 0.27, platform_length: 0.5}
 
   - type: lowered_stairs
     min_height: 0.30
     max_height: 0.48
-    extra: {n_steps: 3, step_length: 0.32, platform_length: 0.8}
+    extra: {edge_lip: true, n_steps: 3, step_length: 0.32, platform_length: 0.8}
 
   - type: stairs_ascent_descent
     min_height: 0.33
     max_height: 0.51
-    extra: {n_steps: 3, step_length: 0.32}
+    extra: {edge_lip: true, n_steps: 3, step_length: 0.32}
 
   - type: diagonal_stairs
     min_height: 0.40          # 4 x 0.10
     max_height: 0.56          # 4 x 0.14
-    extra: {n_steps: 4, step_length: 0.27, platform_length: 0.5, min_yaw: 20, max_yaw: 30, mirror_alternate: true}
+    extra: {edge_lip: true, n_steps: 4, step_length: 0.27, platform_length: 0.5, min_yaw: 20, max_yaw: 30, mirror_alternate: true}
 
   - type: cobblestones
     min_height: 0.18
     max_height: 0.28
-    extra: {grid_n: 8, max_step: 0.12}
+    extra: {edge_lip: true, grid_n: 8, max_step: 0.12}
 
   - type: stepfield
     min_height: 0.18
     max_height: 0.28
-    extra: {post_size: 0.20, n_posts: 12}
+    extra: {edge_lip: true, post_size: 0.20, n_posts: 12}
 
   - type: rock_formation
     min_height: 0.28
     max_height: 0.36
-    extra: {grid_n: 6, n_levels: 5, dropout: 0.3, coarse_n: 4}
+    extra: {edge_lip: true, grid_n: 6, n_levels: 5, dropout: 0.3, coarse_n: 4}
 
   - type: diagonal_pyramid
     min_height: 0.25
     max_height: 0.40
-    extra: {n_rows: 11, hidden_layers: 3}
+    extra: {friction: 2.5, n_rows: 11, hidden_layers: 3}
 
   - type: half_platform
     min_height: 0.18
     max_height: 0.28
-    extra: {field_size: 2.4}
+    extra: {edge_lip: true, field_size: 2.4}
 
   - type: stump
     min_height: 0.22
     max_height: 0.32
-    extra: {scale: 0.6}
+    extra: {friction: 2.0, scale: 0.6}
 
   - type: stump_field
     min_height: 0.22
     max_height: 0.32
-    extra: {n_stumps: 3, spacing: 1.1, scale: 0.75, offset: 0.35, mirror_alternate: true, mesh_stride: 2}
+    extra: {friction: 2.0, n_stumps: 3, spacing: 1.1, scale: 0.75, offset: 0.35, mirror_alternate: true, mesh_stride: 2}
 
   - type: pitch_ramp
     name: ridge_ramp
-    extra: {shape: A, min_angle: 12, max_angle: 26, ramp_length: 1.0, plateau_length: 0.6, mesh_stride: 2}
+    extra: {friction: 2.0, shape: A, min_angle: 12, max_angle: 26, ramp_length: 1.0, plateau_length: 0.6, mesh_stride: 2}
 
   - type: pitch_ramp
     name: valley_ramp
-    extra: {shape: V, min_angle: 12, max_angle: 26, ramp_length: 1.2, plateau_length: 1.4, mesh_stride: 2}
+    extra: {friction: 2.0, shape: V, min_angle: 12, max_angle: 26, ramp_length: 1.2, plateau_length: 1.4, mesh_stride: 2}
 
   - type: diagonal_ramp
-    extra: {min_angle: 12, max_angle: 20, min_yaw: 20, max_yaw: 30, ramp_length: 1.1, mirror_alternate: true, mesh_stride: 2}
+    extra: {friction: 2.0, min_angle: 12, max_angle: 20, min_yaw: 20, max_yaw: 30, ramp_length: 1.1, mirror_alternate: true, mesh_stride: 2}
 
   - type: cross_slope
-    extra: {min_roll: 10, max_roll: 22, hold_length: 2.6, twist_length: 0.8, mirror_alternate: true, mesh_stride: 2}
+    extra: {friction: 2.0, min_roll: 10, max_roll: 22, hold_length: 2.6, twist_length: 0.8, mirror_alternate: true, mesh_stride: 2}
 
   - type: crossing_ramps
     extra: {min_angle: 5, max_angle: 9, wedge_length: 0.5, n_wedges: 8, mirror_alternate: true}
@@ -158,7 +158,22 @@ rows:
     extra: {wavelength: 1.0, n_periods: 4, min_yaw: 10, max_yaw: 20, mirror_alternate: true, mesh_stride: 2}
 
   - type: tilted_pallet
-    extra: {min_pitch: 10, max_pitch: 16, min_yaw: 15, max_yaw: 25, pallet_length: 1.0, mirror_alternate: true}
+    extra: {friction: 2.0, min_pitch: 10, max_pitch: 16, min_yaw: 15, max_yaw: 25, pallet_length: 1.0, mirror_alternate: true}
+
+  # steep hills: two shorter hills back to back instead of one long one, the second one
+  # steeper and taller than the first (hill_growth); a slower twist (1 period, so the roll
+  # changes sign once, in the crest region); more, smaller bumps
+  - type: steep_hill
+    name: double_hill
+    extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 16, max_angle: 26, n_hills: 2, hill_growth: 0.7, ramp_length: 1.0, crest_length: 0.3, trough_length: 0.3, mesh_stride: 1}
+
+  - type: twisted_hill
+    extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 14, max_angle: 26, min_roll: 8, max_roll: 14, twist_periods: 1.0,
+            ramp_length: 1.6, crest_length: 0.8, mirror_alternate: true, mesh_stride: 1}
+
+  - type: bumpy_hill
+    extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 14, max_angle: 26, min_bump: 0.05, max_bump: 0.11, n_bumps: 34, bump_band: 1.45, bump_radius: [0.2, 0.4],
+            ramp_length: 1.6, crest_length: 0.8, mesh_stride: 1}
 
   # familiar parts, new order / new pairing
   - type: sequence

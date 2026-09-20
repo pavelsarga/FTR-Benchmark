@@ -47,55 +47,56 @@ rows:
   - type: raised_platform
     min_height: 0.20
     max_height: 0.30
-    extra: {platform_width: 2.0}
+    extra: {edge_lip: true, platform_width: 2.0}
 
   - type: lowered_platform
     name: pit
     min_height: 0.18
     max_height: 0.30
-    extra: {pit_width: 1.6}
+    extra: {edge_lip: true, pit_width: 1.6}
 
   - type: double_trench
     min_height: 0.15
     max_height: 0.28
-    extra: {trench_width: 1.0, middle_width: 1.0}
+    extra: {edge_lip: true, trench_width: 1.0, middle_width: 1.0}
 
   # drive-through trench: wide and shallow — strictly wider than deep_gap
   - type: widening_trench
     name: drive_trench
-    extra: {trench_depth: 0.25, min_width: 0.6, max_width: 1.5}
+    extra: {edge_lip: true, trench_depth: 0.25, min_width: 0.6, max_width: 1.5}
 
   # bridging gap: narrow and deep — falling in ends the episode
   - type: widening_trench
     name: deep_gap
-    extra: {trench_depth: 0.6, min_width: 0.15, max_width: 0.45}
+    extra: {edge_lip: true, trench_depth: 0.6, min_width: 0.15, max_width: 0.45}
 
   # ── things smaller than the robot ─────────────────────────────────────────
   # the narrow beam the robot straddles belly-first (Cihala's "log / narrow wall")
   - type: log_crossing
     min_height: 0.10
     max_height: 0.28
-    extra: {log_length: 1.5, log_width: 0.25}
+    extra: {edge_lip: true, log_length: 1.5, log_width: 0.25}
 
   - type: twin_rails
     min_height: 0.15
     max_height: 0.30
-    extra: {rail_width: 0.4, gap_width: 1.5, wall_height: 0.25}
+    extra: {edge_lip: true, rail_width: 0.4, gap_width: 1.5, wall_height: 0.25}
 
   - type: round_log
     min_height: 0.15
     max_height: 0.28
+    extra: {edge_lip: true}
 
   - type: round_log
     name: diagonal_log
     min_height: 0.15
     max_height: 0.25
-    extra: {min_yaw: 20, max_yaw: 45, mirror_alternate: true}
+    extra: {edge_lip: true, min_yaw: 20, max_yaw: 45, mirror_alternate: true}
 
   - type: diagonal_trunk
     min_height: 0.20
     max_height: 0.30
-    extra: {min_angle: 15, max_angle: 45, trunk_width: 0.35, wall_height: 0.2, mirror_alternate: true}
+    extra: {friction: 3.0, min_angle: 15, max_angle: 45, trunk_width: 0.35, wall_height: 0.2, mirror_alternate: true}
 
   # ── stairs: rise 0.10 -> 0.17 on MIXED treads (0.26 / 0.28 / 0.30). On marv_calib the
   #    custom_mixed policies (trained on 0.30 treads only) fell from 0.83 to 0 between 0.10
@@ -104,84 +105,86 @@ rows:
   - type: raised_stairs
     min_height: 0.40          # 4 x 0.10
     max_height: 0.68          # 4 x 0.17
-    extra: {n_steps: 4, step_length: 0.30, platform_length: 0.6}
+    extra: {edge_lip: true, n_steps: 4, step_length: 0.30, platform_length: 0.6}
 
   - type: lowered_stairs
     min_height: 0.40
     max_height: 0.64
-    extra: {n_steps: 4, step_length: 0.28, platform_length: 0.6}
+    extra: {edge_lip: true, n_steps: 4, step_length: 0.28, platform_length: 0.6}
 
   - type: raised_stairs
     name: steep_stairs        # 0.26 tread: 23 -> 32 deg
     min_height: 0.44          # 4 x 0.11
     max_height: 0.64          # 4 x 0.16
-    extra: {n_steps: 4, step_length: 0.26, platform_length: 0.6}
+    extra: {edge_lip: true, n_steps: 4, step_length: 0.26, platform_length: 0.6}
 
   - type: stairs_ascent_descent
     min_height: 0.40
     max_height: 0.68
-    extra: {n_steps: 4, step_length: 0.30}
+    extra: {edge_lip: true, n_steps: 4, step_length: 0.30}
 
   - type: diagonal_stairs
     min_height: 0.30          # 3 x 0.10
     max_height: 0.45          # 3 x 0.15
-    extra: {n_steps: 3, step_length: 0.30, platform_length: 0.6, min_yaw: 15, max_yaw: 35, mirror_alternate: true}
+    extra: {edge_lip: true, n_steps: 3, step_length: 0.30, platform_length: 0.6, min_yaw: 15, max_yaw: 35, mirror_alternate: true}
 
   # ── fields (traversable by construction: neighbour rule) ──────────────────
   - type: cobblestones
     min_height: 0.15
     max_height: 0.30
-    extra: {grid_n: 11, max_step: 0.12}
+    extra: {edge_lip: true, grid_n: 11, max_step: 0.12}
 
   - type: cobblestones
     name: coarse_cobbles
     min_height: 0.15
     max_height: 0.30
-    extra: {grid_n: 5, max_step: 0.15}
+    extra: {edge_lip: true, grid_n: 5, max_step: 0.15}
 
   - type: stepfield
     min_height: 0.15
     max_height: 0.30
+    extra: {edge_lip: true}
 
   - type: rock_formation
     min_height: 0.25
     max_height: 0.36
-    extra: {grid_n: 8, n_levels: 6, dropout: 0.35, coarse_n: 5}
+    extra: {edge_lip: true, grid_n: 8, n_levels: 6, dropout: 0.35, coarse_n: 5}
 
   - type: diagonal_pyramid
     min_height: 0.20
     max_height: 0.45
-    extra: {n_rows: 13, hidden_layers: 4}
+    extra: {friction: 2.5, n_rows: 13, hidden_layers: 4}
 
   - type: half_platform
     min_height: 0.15
     max_height: 0.30
-    extra: {field_size: 3.0}
+    extra: {edge_lip: true, field_size: 3.0}
 
   - type: stump
     min_height: 0.20
     max_height: 0.35
+    extra: {friction: 2.0}
 
   # three overlapping bumps staggered left/right: never flat, one track always higher
   - type: stump_field
     min_height: 0.20
     max_height: 0.35
-    extra: {mirror_alternate: true, mesh_stride: 2}
+    extra: {friction: 2.0, mirror_alternate: true, mesh_stride: 2}
 
   # ── slopes (new: nothing in custom_mixed was sloped) ──────────────────────
   - type: pitch_ramp
     name: ridge_ramp
-    extra: {shape: A, min_angle: 8, max_angle: 30, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
+    extra: {friction: 2.0, shape: A, min_angle: 8, max_angle: 30, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
 
   - type: pitch_ramp
     name: valley_ramp
-    extra: {shape: V, min_angle: 8, max_angle: 30, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
+    extra: {friction: 2.0, shape: V, min_angle: 8, max_angle: 30, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
 
   - type: diagonal_ramp
-    extra: {min_angle: 10, max_angle: 22, min_yaw: 15, max_yaw: 35, mirror_alternate: true, mesh_stride: 2}
+    extra: {friction: 2.0, min_angle: 10, max_angle: 22, min_yaw: 15, max_yaw: 35, mirror_alternate: true, mesh_stride: 2}
 
   - type: cross_slope
-    extra: {min_roll: 8, max_roll: 25, mirror_alternate: true, mesh_stride: 2}
+    extra: {friction: 2.0, min_roll: 8, max_roll: 25, mirror_alternate: true, mesh_stride: 2}
 
   - type: crossing_ramps
     extra: {min_angle: 4, max_angle: 10, wedge_length: 0.6, n_wedges: 6, mirror_alternate: true}
@@ -192,7 +195,26 @@ rows:
     extra: {wavelength: 1.2, n_periods: 3, min_yaw: 0, max_yaw: 25, mirror_alternate: true, mesh_stride: 2}
 
   - type: tilted_pallet
-    extra: {min_pitch: 8, max_pitch: 18, min_yaw: 10, max_yaw: 30, mirror_alternate: true}
+    extra: {friction: 2.0, min_pitch: 8, max_pitch: 18, min_yaw: 10, max_yaw: 30, mirror_alternate: true}
+
+  # ── steep hills: stability, not tilt avoidance ────────────────────────────
+  # 1.8 m ramps put the whole 1.12 m track on the slope at once; the policy has to hold a
+  # pitched body for seconds (rear flippers behind the CoM so it cannot tip backwards) and
+  # manage the crest, instead of treating any pitch as an error. Both the angle (16 -> 30 deg)
+  # and the ramp length (1.4 -> 1.8 m) grade, so the hill is 0.40 -> 1.04 m tall.
+  - type: steep_hill
+    extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 16, max_angle: 30, min_ramp_length: 1.4, max_ramp_length: 1.8, crest_length: 0.6, mesh_stride: 1}
+
+  # the same hill with a roll that keeps changing sign along the path (1.5 sine periods)
+  - type: twisted_hill
+    extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 14, max_angle: 28, min_roll: 6, max_roll: 14, twist_periods: 1.5,
+            min_ramp_length: 1.5, max_ramp_length: 1.8, crest_length: 0.6, mirror_alternate: true, mesh_stride: 1}
+
+  # the same hill with seeded random bumps and hollows all across the slope (peak 0.04 -> 0.12 m;
+  # 30 of them over nearly the whole lane width, so they cannot be driven around)
+  - type: bumpy_hill
+    extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 14, max_angle: 28, min_bump: 0.04, max_bump: 0.12, n_bumps: 30, bump_band: 1.45,
+            min_ramp_length: 1.5, max_ramp_length: 1.8, crest_length: 0.6, mesh_stride: 1}
 
   # ── sequences: two short features, ~1.9 m apart ───────────────────────────
   - type: sequence
