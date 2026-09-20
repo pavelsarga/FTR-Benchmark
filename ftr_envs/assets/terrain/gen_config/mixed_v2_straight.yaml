@@ -46,7 +46,7 @@ rows:
   #    climb-out — measured on marv_calib: 100% at 0.30, 0% at 0.333, both policies) ──
   - type: raised_platform
     min_height: 0.20
-    max_height: 0.30
+    max_height: 0.26
     extra: {edge_lip: true, platform_width: 2.0}
 
   - type: lowered_platform
@@ -96,7 +96,7 @@ rows:
   - type: diagonal_trunk
     min_height: 0.20
     max_height: 0.30
-    extra: {friction: 3.0, min_angle: 15, max_angle: 45, trunk_width: 0.35, wall_height: 0.2, mirror_alternate: true}
+    extra: {edge_lip: true, min_angle: 15, max_angle: 45, trunk_width: 0.35, wall_height: 0.2, mirror_alternate: true}
 
   # ── stairs: rise 0.10 -> 0.17 on MIXED treads (0.26 / 0.28 / 0.30). On marv_calib the
   #    custom_mixed policies (trained on 0.30 treads only) fell from 0.83 to 0 between 0.10
@@ -153,7 +153,7 @@ rows:
   - type: diagonal_pyramid
     min_height: 0.20
     max_height: 0.45
-    extra: {friction: 2.5, n_rows: 13, hidden_layers: 4}
+    extra: {edge_lip: true, n_rows: 13, hidden_layers: 4}
 
   - type: half_platform
     min_height: 0.15
@@ -195,7 +195,7 @@ rows:
     extra: {wavelength: 1.2, n_periods: 3, min_yaw: 0, max_yaw: 25, mirror_alternate: true, mesh_stride: 2}
 
   - type: tilted_pallet
-    extra: {friction: 2.0, min_pitch: 8, max_pitch: 18, min_yaw: 10, max_yaw: 30, mirror_alternate: true}
+    extra: {edge_lip: true, min_pitch: 8, max_pitch: 18, min_yaw: 10, max_yaw: 30, mirror_alternate: true}
 
   # ── steep hills: stability, not tilt avoidance ────────────────────────────
   # 1.8 m ramps put the whole 1.12 m track on the slope at once; the policy has to hold a
@@ -220,6 +220,7 @@ rows:
   - type: sequence
     name: log_then_step
     extra:
+      edge_lip: true
       parts:
         - {type: flat_patch, width: 1.2}
         - {type: round_log, min_height: 0.15, max_height: 0.22, width: 2.6}

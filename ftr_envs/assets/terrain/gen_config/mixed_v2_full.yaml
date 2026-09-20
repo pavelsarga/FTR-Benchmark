@@ -2,7 +2,7 @@ name: mixed_v2_full
 rows:
 - type: raised_platform
   min_height: 0.2
-  max_height: 0.3
+  max_height: 0.26
   extra:
     edge_lip: true
     platform_width: 2.0
@@ -67,7 +67,7 @@ rows:
   min_height: 0.2
   max_height: 0.3
   extra:
-    friction: 3.0
+    edge_lip: true
     min_angle: 15
     max_angle: 45
     trunk_width: 0.35
@@ -149,7 +149,7 @@ rows:
   min_height: 0.2
   max_height: 0.45
   extra:
-    friction: 2.5
+    edge_lip: true
     n_rows: 13
     hidden_layers: 4
 - type: half_platform
@@ -225,7 +225,7 @@ rows:
     mesh_stride: 2
 - type: tilted_pallet
   extra:
-    friction: 2.0
+    edge_lip: true
     min_pitch: 8
     max_pitch: 18
     min_yaw: 10
@@ -275,6 +275,7 @@ rows:
 - type: sequence
   name: log_then_step
   extra:
+    edge_lip: true
     parts:
     - type: flat_patch
       width: 1.2
