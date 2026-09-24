@@ -136,6 +136,16 @@ class CrossingEnvCfg(FtrEnvCfg):
     # Progress bin of the episode metric (m along the start->target axis).
     tq_bin_length: float = 0.25
 
+    # Descent detector — for the action-bonus gating below and as a standalone diagnostic.
+    # A cell is "ahead" if it is further toward the front of the yaw-aligned height map (row
+    # 0) than the footprint's own front edge; the window is descent_lookahead_cells rows,
+    # same column span as the TQ footprint (i.e. straight ahead, not to the side). Descending
+    # is flagged when the lowest point in that window sits more than descent_drop_threshold
+    # below the footprint's own mean ground height -- i.e. an edge is coming up, not just
+    # ordinary terrain roughness.
+    descent_lookahead_cells: int = 8
+    descent_drop_threshold: float = 0.10
+
     # Action bonus
     # Encourages the policy to take non-zero actions rather than freezing.
     # Set to None to disable.
@@ -148,6 +158,13 @@ class CrossingEnvCfg(FtrEnvCfg):
     # stops pulling toward full throttle once the robot moves at the target pace. None keeps
     # the cubic form, which is ~0 below half throttle and maximal only at full throttle.
     action_bonus_target: float | None = None
+    # Multiplies action_bonus by this factor on steps the descent detector flags (see
+    # descent_lookahead_cells/descent_drop_threshold above). 1.0 = no change (default);
+    # < 1.0 relaxes the "keep moving" pressure specifically where the policy needs to slow
+    # down or pause to extend a flipper before an edge, without touching it anywhere else --
+    # unlike a global action_bonus reduction, this cannot itself cause the policy to stop
+    # exploring forward motion in general, since 95%+ of terrain is never gated.
+    action_bonus_descent_scale: float = 1.0
 
     # Per-step penalty applied every step (negative → constant reward penalty).
     step_penalty: float = 0.0
@@ -423,6 +440,24 @@ class CrossingEnv(FtrEnv):
         if _ep_done.any():  # only on steps where an episode ended, so the logged mean is not NaN
             reward_info["tq/episode_quality"] = _ep[_ep_done].mean().item()
 
+        # ── Descent diagnostic ───────────────────────────────────────────────
+        # Clearance and flipper posture specifically on steps flagged as "edge ahead", vs the
+        # same quantities everywhere else — the aggregate tq/clearance above can look fine
+        # while badly failing exactly on descents, which is the case this exists to catch.
+        # |flipper_positions| is a convention-agnostic "how far from flat" proxy: it does not
+        # assume a "down" direction (see FtrEnvCfg.marv_flipper_front_up_deg for why the
+        # front pair's naming does not mean what it says).
+        desc_mask = healthy & self.descending
+        rest_mask = healthy & ~self.descending
+        reward_info["descent/pct_descending"] = self.descending[healthy].float().mean().item() if healthy.any() else 0.0
+        if desc_mask.any():
+            reward_info["descent/clearance"] = (1.0 - self.tq_badness[desc_mask, 2]).mean().item()
+            reward_info["descent/gap"] = self.tq_gap[desc_mask].mean().item()
+            reward_info["descent/flipper_extension"] = self.flipper_positions[desc_mask].abs().mean().item()
+        if rest_mask.any():
+            reward_info["descent/clearance_elsewhere"] = (1.0 - self.tq_badness[rest_mask, 2]).mean().item()
+            reward_info["descent/flipper_extension_elsewhere"] = self.flipper_positions[rest_mask].abs().mean().item()
+
         # ── Classic state group ────────────────────────────────────────────
         # Linear velocity magnitude
         lin_vel_mag = self.robot_lin_velocities.norm(dim=-1)
@@ -538,6 +573,22 @@ class CrossingEnv(FtrEnv):
         badness = torch.nan_to_num(badness, nan=1.0, posinf=1.0, neginf=1.0)
         self.tq_badness.copy_(badness)
         self.tq_step.copy_(1.0 - badness.mean(dim=-1))
+
+        # -- descent detector: is there an edge in the lookahead window, in the robot's own
+        # path, lower than where it currently stands? Reuses `ground`/r0/c0/fr/fc from the
+        # clearance block above. Cells at the front of the map fall outside the lookahead
+        # window (r0 - K < 0); those envs are never flagged (no data to look ahead into).
+        K = cfg.descent_lookahead_cells
+        ahead_r0 = max(0, r0 - K)
+        if ahead_r0 < r0:
+            ahead = self.current_frame_height_maps[:, ahead_r0:r0, c0:c0 + fc]
+            footprint_ref = ground.mean(dim=(1, 2))
+            ahead_min = ahead.amin(dim=(1, 2))
+            self.descent_drop = footprint_ref - ahead_min
+            self.descending = self.descent_drop > cfg.descent_drop_threshold
+        else:
+            self.descent_drop = torch.zeros(N, device=self.device)
+            self.descending = torch.zeros(N, dtype=torch.bool, device=self.device)
 
         # -- episode metric: worst badness per progress bin, mean over bins, mean over channels
         axis = (self.target_positions[:, :2] - self.start_positions[:, :2])

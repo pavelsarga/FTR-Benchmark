@@ -152,7 +152,11 @@ class MarvRLModule(RLModule):
                 v_norm = (v_cmd * cfg.lin_action_ratio + v_body * (1 - cfg.lin_action_ratio)) / cfg.action_bonus_target
             else:
                 v_norm = v_cmd.pow(3) * cfg.lin_action_ratio + v_body.pow(3) * (1 - cfg.lin_action_ratio)
-            components["action_bonus"] = cfg.action_bonus_coef * torch.clamp(v_norm, max=1.0, min=-1.0)
+            bonus = cfg.action_bonus_coef * torch.clamp(v_norm, max=1.0, min=-1.0)
+            if cfg.action_bonus_descent_scale != 1.0:
+                scale = torch.where(env.descending, cfg.action_bonus_descent_scale, 1.0)
+                bonus = bonus * scale
+            components["action_bonus"] = bonus
 
         # Flipper action bonus
         if cfg.flipper_action_bonus_coef is not None:
