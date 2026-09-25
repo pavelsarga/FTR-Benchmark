@@ -83,7 +83,7 @@ class MarvRLModule(RLModule):
         # Potential-based shaping: coef * (gamma * phi(s') - phi(s)), phi = -dist
         curr_dist = (env.target_positions[:, :2] - env.positions[:, :2]).norm(dim=-1)
         prev_dist = (env.target_positions[:, :2] - env.prev_positions[:, :2]).norm(dim=-1)
-        components["shaping"] = cfg.shaping_coef * (prev_dist - cfg.shaping_gamma * curr_dist)
+        components["shaping"] = cfg.forward_reward_scale * cfg.shaping_coef * (prev_dist - cfg.shaping_gamma * curr_dist)
 
         # Joint-velocity variance penalty
         if cfg.joint_vel_variance_coef is not None:
@@ -152,7 +152,7 @@ class MarvRLModule(RLModule):
                 v_norm = (v_cmd * cfg.lin_action_ratio + v_body * (1 - cfg.lin_action_ratio)) / cfg.action_bonus_target
             else:
                 v_norm = v_cmd.pow(3) * cfg.lin_action_ratio + v_body.pow(3) * (1 - cfg.lin_action_ratio)
-            bonus = cfg.action_bonus_coef * torch.clamp(v_norm, max=1.0, min=-1.0)
+            bonus = cfg.forward_reward_scale * cfg.action_bonus_coef * torch.clamp(v_norm, max=1.0, min=-1.0)
             if cfg.action_bonus_descent_scale != 1.0:
                 scale = torch.where(env.descending, cfg.action_bonus_descent_scale, 1.0)
                 bonus = bonus * scale
@@ -189,7 +189,7 @@ class MarvRLModule(RLModule):
             components[name] = torch.where(terminal, torch.zeros_like(comp), comp)
 
         components["terminal_bonus"] = (
-            env._success_mask.float() * cfg.goal_reached_reward
+            env._success_mask.float() * cfg.goal_reached_reward * cfg.forward_reward_scale
             + env._fail_mask.float() * cfg.failed_reward
             + env._timeout_mask.float() * (cfg.timeout_penalty or 0.0)
         )

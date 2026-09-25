@@ -165,6 +165,10 @@ class CrossingEnvCfg(FtrEnvCfg):
     # unlike a global action_bonus reduction, this cannot itself cause the policy to stop
     # exploring forward motion in general, since 95%+ of terrain is never gated.
     action_bonus_descent_scale: float = 1.0
+    # Common multiplier on every forward-pushing reward: shaping, action_bonus and
+    # goal_reached_reward. Driven at train time by an SR-gated scheduler so that, once the
+    # policy crosses reliably, those terms shrink and the traversal-quality term dominates.
+    forward_reward_scale: float = 1.0
 
     # Per-step penalty applied every step (negative → constant reward penalty).
     step_penalty: float = 0.0
