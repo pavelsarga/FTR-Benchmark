@@ -144,6 +144,11 @@ class MarvRLModule(RLModule):
         if cfg.tq_coef is not None:
             components["traversal_quality"] = -cfg.tq_coef * (1.0 - env.tq_step)
 
+        # Ground-truth flipper-state reward: bonus for being in the state the terrain calls for
+        # (CrossingEnv.state_label, -1 = unlabelled, never matches).
+        if cfg.state_label_coef is not None:
+            components["state_label"] = cfg.state_label_coef * (env.flipper_state == env.state_label).float()
+
         # Action bonus
         if cfg.action_bonus_coef is not None:
             v_cmd = env.actions[:, 0]

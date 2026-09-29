@@ -146,6 +146,18 @@ class CrossingEnvCfg(FtrEnvCfg):
     descent_lookahead_cells: int = 8
     descent_drop_threshold: float = 0.10
 
+    # Ground-truth flipper-state labels (flipper_control_mode == "state" only), from the
+    # noise-free height map: DR when the ground under the rear (state_label_rear_cells rows
+    # behind the footprint) is more than state_label_drop_threshold above the footprint's
+    # front half, i.e. the front has already gone over an edge; else DF when the descent
+    # detector above fires; else N when the whole window (lookahead to rear) spans less than
+    # state_label_flat_threshold. Anything else is unlabelled. state_label_coef rewards
+    # being in the labelled state; None = labels/diagnostics only, no reward.
+    state_label_coef: float | None = None
+    state_label_rear_cells: int = 8
+    state_label_drop_threshold: float = 0.10
+    state_label_flat_threshold: float = 0.04
+
     # Action bonus
     # Encourages the policy to take non-zero actions rather than freezing.
     # Set to None to disable.
@@ -462,6 +474,24 @@ class CrossingEnv(FtrEnv):
             reward_info["descent/clearance_elsewhere"] = (1.0 - self.tq_badness[rest_mask, 2]).mean().item()
             reward_info["descent/flipper_extension_elsewhere"] = self.flipper_positions[rest_mask].abs().mean().item()
 
+        # ── Discrete flipper states ──────────────────────────────────────────
+        if cfg.flipper_control_mode == "state" and healthy.any():
+            names = [s[0] for s in cfg.flipper_states_deg]
+            st = self.flipper_state[healthy]
+            for k, name in enumerate(names):
+                reward_info[f"flipper_state/pct_{name}"] = (st == k).float().mean().item()
+            reward_info["flipper_state/switch_rate"] = self.flipper_state_switched[healthy].float().mean().item()
+            reward_info["flipper_state/blocked_rate"] = self.flipper_state_blocked[healthy].float().mean().item()
+            # How far the joints are from the commanded pose: confirms the poses are reachable.
+            pose_err = torch.rad2deg((self.flipper_positions - self.flipper_target_pos).abs().mean(dim=-1))
+            reward_info["flipper_state/pose_err_deg"] = pose_err[healthy].mean().item()
+            lbl = self.state_label[healthy]
+            for tag, name in (("flat", "N"), ("df", "DF"), ("dr", "DR")):
+                m = lbl == names.index(name)
+                reward_info[f"state_label/pct_{tag}"] = m.float().mean().item()
+                if m.any():
+                    reward_info[f"state_label/match_{tag}"] = (st[m] == names.index(name)).float().mean().item()
+
         # ── Classic state group ────────────────────────────────────────────
         # Linear velocity magnitude
         lin_vel_mag = self.robot_lin_velocities.norm(dim=-1)
@@ -593,6 +623,21 @@ class CrossingEnv(FtrEnv):
         else:
             self.descent_drop = torch.zeros(N, device=self.device)
             self.descending = torch.zeros(N, dtype=torch.bool, device=self.device)
+
+        if cfg.flipper_control_mode == "state":
+            hm = self.current_frame_height_maps
+            rear_r1 = min(H, r0 + fr + cfg.state_label_rear_cells)
+            front_half = hm[:, r0:r0 + fr // 2, c0:c0 + fc].mean(dim=(1, 2))
+            rear = hm[:, r0 + fr:rear_r1, c0:c0 + fc].mean(dim=(1, 2))
+            window = hm[:, ahead_r0:rear_r1, c0:c0 + fc].flatten(1)
+            flat = (window.amax(dim=1) - window.amin(dim=1)) < cfg.state_label_flat_threshold
+            rear_high = (rear - front_half) > cfg.state_label_drop_threshold
+            names = [s[0] for s in cfg.flipper_states_deg]
+            label = torch.full((N,), -1, dtype=torch.long, device=self.device)
+            label[flat] = names.index("N")
+            label[self.descending] = names.index("DF")
+            label[rear_high] = names.index("DR")
+            self.state_label = label
 
         # -- episode metric: worst badness per progress bin, mean over bins, mean over channels
         axis = (self.target_positions[:, :2] - self.start_positions[:, :2])

@@ -12,7 +12,8 @@ from rl_modules.marv_rl.marv_rl_cnn_flat_encoder import MarvRLCNNFlatEncoder
 class MarvRLFlatObservation(Observation):
     """Flat observation vector produced by FTR-Benchmark CrossingEnv.
 
-    Default (flipper_style=False): 966-D  (945 hmap + 21 state, 6 prev_action)
+    Default (flipper_style=False): 945 hmap + 15 state + num_actions prev_action
+                                   (966-D with the usual 6-D action, 969-D in flipper state mode)
     flipper_style=True:           4119-D  (4096 hmap + 15 state + 8 prev_action)
 
     This observation is filled directly by FtrTorchRLEnv; the __call__ method is never
@@ -26,6 +27,12 @@ class MarvRLFlatObservation(Observation):
         opts = self.encoder_opts or {}
         if opts.get("flipper_style", False):
             self.dim = 4119  # 4096 hmap + 15 state + 8 prev_action (4 track vels + 4 flipper angles)
+        else:
+            # FtrTorchRLEnv has no action_spec yet at this point; the Isaac-free inference stubs
+            # have no ftr_env.
+            ftr_env = getattr(self.env, "ftr_env", None)
+            num_actions = ftr_env.unwrapped.cfg.num_actions if ftr_env is not None else self.env.action_spec.shape[-1]
+            self.dim = 945 + 15 + num_actions
 
     def get_spec(self) -> Unbounded:
         return Unbounded(

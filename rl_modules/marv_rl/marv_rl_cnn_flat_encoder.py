@@ -59,6 +59,8 @@ class MarvRLCNNFlatEncoder(ObservationEncoder):
 
     def __init__(self, output_dim: int, state_dim: int = 21, cnn_output_dim: int = 128, state_proj_dim: int | None = None, input_dim: int | None = None, **mlp_kwargs):
         super().__init__(output_dim)
+        if input_dim is not None:
+            state_dim = input_dim - self.HM_DIM
         self.state_dim = state_dim
         self.cnn = MarvRLHeightmapEncoder(self.HM_SIZE, output_dim=cnn_output_dim)
         # Optional learned projection to bring state up to a comparable scale before fusion.

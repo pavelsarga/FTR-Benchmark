@@ -28,6 +28,7 @@ from omni.isaac.lab.utils import configclass
 from ftr_envs.assets.articulation.ftr import FtrWheelArticulation
 from ftr_envs.assets.ftr import FTR_CFG, FTR_SIM_CFG
 from ftr_envs.assets.terrain.terrain import Terrain
+from ftr_envs.tasks.crossing.flipper_states import DEFAULT_FLIPPER_STATES_DEG, state_pose_targets, step_flipper_state
 from ftr_envs.utils.torch import add_noise, rand_range
 
 _log = logging.getLogger(__name__)
@@ -172,7 +173,14 @@ class FtrEnvCfg(DirectRLEnvCfg):
     #       integration/decimation; the commanded angle is applied directly. Works with
     #       both the symmetric ±flipper_pos_max_deg limits and the asymmetric per-pair
     #       MARV limits (marv_flipper_*_deg).
+    #   "state" — discrete flipper states (flipper_states_deg): the action is
+    #       [v, w, s_0..s_{K-1}], the pose of argmax(s) is the target, and a new state is only
+    #       accepted flipper_state_cooldown_s after the previous change. Needs 4 independent
+    #       flippers (no sync_flipper_control / flipper_style).
     flipper_control_mode: str = "velocity"
+    # (name, front_deg, rear_deg) per state, ROS convention; see flipper_states.py.
+    flipper_states_deg: tuple = DEFAULT_FLIPPER_STATES_DEG
+    flipper_state_cooldown_s: float = 0.2
 
     # Per-step flipper angle step (degrees) used only when flipper_control_mode == "increment".
     # Default 15.0° = π/12, the increment AT-D3QN (Pan et al. 2023) was designed around.
@@ -293,6 +301,10 @@ class FtrEnv(DirectRLEnv):
             self.cfg.num_actions = 2 * self.flipper_num
             # 4096 hmap + 15 state (orient/vel/joints/goal) + 2*flipper_num prev_action
             self.cfg.num_observations = 4096 + 15 + 2 * self.flipper_num
+        elif self.cfg.flipper_control_mode == "state":
+            if self.flipper_num != 4:
+                raise ValueError("flipper_control_mode='state' needs 4 independent flippers (sync_flipper_control off)")
+            self.cfg.num_actions = 2 + len(self.cfg.flipper_states_deg)
         else:
             self.cfg.num_actions = self.flipper_num + 2   # +2 for track v, w
             self.cfg.num_observations += (-4 + self.flipper_num)
@@ -363,8 +375,17 @@ class FtrEnv(DirectRLEnv):
             self.height_map_size = (45, 21)
         self.current_frame_height_maps = torch.zeros((self.num_envs, *self.height_map_size), device=self.device)
 
-        last_action_dim = 2 * self.flipper_num if self.cfg.flipper_style else self.flipper_num + 2
-        self.last_action = torch.zeros(self.num_envs, last_action_dim, device=self.device)
+        self.last_action = torch.zeros(self.num_envs, self.cfg.num_actions, device=self.device)
+        if self.cfg.flipper_control_mode == "state":
+            low, high = self.flipper_angle_bounds()
+            self.flipper_state_poses = state_pose_targets(self.cfg.flipper_states_deg, low, high)
+            self.flipper_state_cooldown_steps = max(0, round(self.cfg.flipper_state_cooldown_s / self.step_dt))
+            self.flipper_state = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+            self.flipper_state_cooldown = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+            self.flipper_state_switched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            self.flipper_state_blocked = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            print(f"[FtrEnv] flipper_control_mode=state: {len(self.cfg.flipper_states_deg)} states, "
+                  f"cooldown {self.flipper_state_cooldown_steps} control steps", flush=True)
         self.forward_vel_commands = torch.zeros(self.num_envs, device=self.device)
 
     def _apply_action(self):
@@ -562,6 +583,9 @@ class FtrEnv(DirectRLEnv):
         )
 
         self.last_action[env_ids] = 0.0
+        if self.cfg.flipper_control_mode == "state":
+            self.flipper_state[env_ids] = 0
+            self.flipper_state_cooldown[env_ids] = 0
 
         reset_infos = [self._reset_info_generate() for _ in range(n)]
         poses = torch.stack([i["pose"] for i in reset_infos]).to(self.device)
@@ -723,6 +747,11 @@ class FtrEnv(DirectRLEnv):
                 # No integration/decimation — the commanded angle is applied directly.
                 unit = (flipper_cmd.clamp(-1.0, 1.0) + 1.0) * 0.5
                 self.flipper_target_pos = low + unit * (high - low)
+            elif self.cfg.flipper_control_mode == "state":
+                (self.flipper_state, self.flipper_state_cooldown,
+                 self.flipper_state_switched, self.flipper_state_blocked) = step_flipper_state(
+                    flipper_cmd, self.flipper_state, self.flipper_state_cooldown, self.flipper_state_cooldown_steps)
+                self.flipper_target_pos = self.flipper_state_poses[self.flipper_state]
             else:
                 # Velocity and increment control both integrate a per-step delta onto the
                 # current flipper angle, then clamp to [low, high]. flipper_style uses native
