@@ -19,6 +19,8 @@ from rl_modules.rl_module import RLModule
 from rl_modules.registry import RLMODULE_REGISTRY
 
 from .ftr_env import FtrEnv, FtrEnvCfg, configclass
+from .smoothness import CHANNELS as SMOOTH_CHANNELS
+from .smoothness import SmoothnessTracker
 
 @torch.jit.script
 def point_in_rotated_ellipse(x, y, h, k, a, b, theta):
@@ -135,6 +137,25 @@ class CrossingEnvCfg(FtrEnvCfg):
     tq_clearance_two_sided: bool = True
     # Progress bin of the episode metric (m along the start->target axis).
     tq_bin_length: float = 0.25
+
+    # Motion smoothness (smoothness.py) — derivatives of the body motion, no reference values.
+    # Sampled every physics substep from _apply_action. Channels:
+    #   pitch_acc, roll_acc  low-passed angular acceleration  -> cost = int alpha^2 dt   [rad^2/s^3]
+    #   v_jerk               forward-speed jerk                -> cost = int j^2 dt       [m^2/s^5]
+    #   z_ss, pitch_ss       d2z/ds2, d2pitch/ds2 over 3-D path length s -> int (.)^2 ds
+    # The temporal channels grow ~v^3 in front of a terrain change, the spatial ones not at all
+    # with speed: together they price speed exactly where the terrain changes. Per-step costs
+    # are always computed and logged (smooth/*, extras["smooth_episode_*"]); smooth_coef turns
+    # them into a reward, r = -smooth_coef * sum_k w_k * f(cost_k), f = smooth_compress.
+    smooth_coef: float | None = None
+    # per-channel weights, in smoothness.CHANNELS order (pitch_acc, roll_acc, v_jerk, z_ss, pitch_ss)
+    smooth_weights: tuple = (1.0, 1.0, 0.0, 1.0, 1.0)
+    # "none" keeps the reward additive (sum over an episode = the episode metric); "sqrt" /
+    # "log1p" tame the heavy tail of squared derivatives for the value function.
+    smooth_compress: str = "none"
+    smooth_fc_hz: float = 5.0      # temporal low-pass cutoff (Hz)
+    smooth_lam_m: float = 0.15     # spatial low-pass cutoff wavelength (m); 0.1-0.2 validated
+    smooth_ds_m: float = 0.02      # spatial resampling step (m)
 
     # Descent detector — for the action-bonus gating below and as a standalone diagnostic.
     # A cell is "ahead" if it is further toward the front of the yaw-aligned height map (row
@@ -311,7 +332,21 @@ class CrossingEnv(FtrEnv):
         self._tq_bin_worst = torch.zeros((self.num_envs, 3), device=self.device)
         self._tq_bin_sum = torch.zeros((self.num_envs, 3), device=self.device)
         self._tq_bin_count = torch.zeros(self.num_envs, device=self.device)
+        # Motion smoothness, fed every physics substep by _apply_action; armed at the current
+        # pose here because the first reset ran inside FtrEnv.__init__, before it existed.
+        self.smooth = SmoothnessTracker(self.num_envs, self.device, cfg.sim.dt, fc_hz=cfg.smooth_fc_hz,
+                                        lam_m=cfg.smooth_lam_m, ds_m=cfg.smooth_ds_m)
+        self.smooth.reset(torch.arange(self.num_envs, device=self.device), self._robot.data.root_pos_w,
+                          self._robot.data.root_quat_w, self._robot.data.root_ang_vel_b, self._robot.data.root_lin_vel_b)
+        self.smooth_step = torch.zeros((self.num_envs, len(SMOOTH_CHANNELS)), device=self.device)
         self.rl_module: RLModule = RLMODULE_REGISTRY[self.cfg.module_name](self)
+
+    def _apply_action(self):
+        super()._apply_action()
+        # Runs once per physics substep, with the articulation data of the substep just stepped.
+        if hasattr(self, "smooth"):
+            d = self._robot.data
+            self.smooth.substep(d.root_pos_w, d.root_quat_w, d.root_ang_vel_b, d.root_lin_vel_b)
 
     def _get_observations(self) -> VecEnvObs:
         return self.rl_module.get_observations()
@@ -363,6 +398,7 @@ class CrossingEnv(FtrEnv):
         self.clearance = self.positions[:, 2] - self.track_wheel_radius - ground_height
         self.flipper_torques = self._robot.data.applied_torque[:, self._flipper_joint_ids].abs()  # (N, 4)
         self._update_traversal_quality()
+        self._update_smoothness()
 
         # ------------------------------------------------------------------
         # 1. Sum the module's individual reward components. Step penalty and terminal
@@ -447,6 +483,12 @@ class CrossingEnv(FtrEnv):
         reward_info["tq/tilt"] = _hmean(1.0 - self.tq_badness[:, 1])
         reward_info["tq/clearance"] = _hmean(1.0 - self.tq_badness[:, 2])
         reward_info["tq/tilt_deg"] = _hmean(self.tq_tilt_deg)
+        # Motion smoothness: per-step cost per channel (episode metric in extras["smooth_episode_*"]).
+        for k, name in enumerate(SMOOTH_CHANNELS):
+            reward_info[f"smooth/{name}"] = _hmean(self.smooth_step[:, k])
+            if healthy.any() and self.descending.any():
+                dm = healthy & self.descending
+                reward_info[f"smooth/{name}_descending"] = self.smooth_step[dm, k].mean().item() if dm.any() else 0.0
         gap_mean, gap_max, gap_min = _hstats(self.tq_gap)
         reward_info["tq/gap"] = gap_mean
         reward_info["tq/gap_max"] = gap_max
@@ -664,6 +706,18 @@ class CrossingEnv(FtrEnv):
         self.extras["tq_episode_clearance"] = ep[:, 2]
         self.extras["tq_episode"] = ep.mean(dim=-1)
 
+    def _update_smoothness(self) -> None:
+        """This control step's smoothness costs (N, C), and the episode metric of the episodes
+        ending now: per channel, the integral over the episode divided by the path length
+        (cost per metre, comparable across tiles and speeds), NaN while running."""
+        self.smooth_step = self.smooth.pop_step()
+        done = self.reset_terminated | self.reset_time_outs
+        ep = torch.full((self.num_envs, len(SMOOTH_CHANNELS)), float("nan"), device=self.device)
+        if done.any():
+            ep[done] = self.smooth.episode_cost[done] / self.smooth.episode_path[done].clamp(min=0.1)[:, None]
+        for k, name in enumerate(SMOOTH_CHANNELS):
+            self.extras[f"smooth_episode_{name}"] = ep[:, k]
+
     def _reset_idx(self, env_ids):
         super()._reset_idx(env_ids)
         if not hasattr(self, "_tq_bin_idx"):  # first reset runs from FtrEnv.__init__
@@ -672,6 +726,10 @@ class CrossingEnv(FtrEnv):
         self._tq_bin_worst[env_ids] = 0.0
         self._tq_bin_sum[env_ids] = 0.0
         self._tq_bin_count[env_ids] = 0.0
+        # FtrEnv._reset_idx has refreshed positions/orientations/velocities to the reset pose
+        idx = env_ids if isinstance(env_ids, torch.Tensor) else torch.as_tensor(list(env_ids), device=self.device)
+        self.smooth.reset(idx, self.positions[idx], self.orientations[idx],
+                          self.robot_ang_velocities[idx], self.robot_lin_velocities[idx])
 
     def _flush_raw_accel(self) -> None:
         if not self._raw_accel_buf or self.cfg.log_raw_accel_path is None:

@@ -144,6 +144,20 @@ class MarvRLModule(RLModule):
         if cfg.tq_coef is not None:
             components["traversal_quality"] = -cfg.tq_coef * (1.0 - env.tq_step)
 
+        # Motion-smoothness penalty: -coef * sum_k w_k * f(cost_k) over the channels of
+        # CrossingEnv.smooth_step (integrals of squared motion derivatives over this step).
+        # With f = identity the episode sum equals the episode metric smooth_episode_*.
+        if cfg.smooth_coef is not None:
+            c = env.smooth_step
+            if cfg.smooth_compress == "sqrt":
+                c = c.sqrt()
+            elif cfg.smooth_compress == "log1p":
+                c = torch.log1p(c)
+            elif cfg.smooth_compress != "none":
+                raise ValueError(f"smooth_compress must be none / sqrt / log1p, not {cfg.smooth_compress!r}")
+            w = torch.as_tensor(cfg.smooth_weights, dtype=c.dtype, device=c.device)
+            components["smoothness"] = -cfg.smooth_coef * (c * w).sum(dim=-1)
+
         # Ground-truth flipper-state reward: bonus for being in the state the terrain calls for
         # (CrossingEnv.state_label, -1 = unlabelled, never matches).
         if cfg.state_label_coef is not None:
