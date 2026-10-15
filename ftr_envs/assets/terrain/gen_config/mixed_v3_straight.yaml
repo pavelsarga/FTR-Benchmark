@@ -1,0 +1,262 @@
+# mixed_v3_straight — mixed_v2_straight rebalanced for descents (misc/metric_research README §5e).
+# v2's census: the first sharp edge met goes up on 73 % of drives, every drop follows a climb of the
+# same height at a fixed distance, and the obstacle sits at a near-fixed distance from spawn (sd
+# 0.02 m on most rows). v3 changes, nothing else:
+#   * ten LOWERED rows (extra.lowered: the obstacle mirrored about the ground, ftr_terrain_gen/
+#     variants.py): cobblestones, coarse_cobbles, stepfield, half_platform, stump_field, wave,
+#     round_log, diagonal_log (gutters), rock_formation, diagonal_pyramid (inverted)
+#   * feature_offset x 0.5: each obstacle shifted up to +-0.5 m along the path per tile
+#   * extra.sample: platform / pit / stair-platform / trench / field lengths drawn per tile, and
+#     raised_platform.exit_height_ratio in [0.5, 1.15] (two-tier platform: drop != rise; the
+#     upper bound keeps the climb <= 0.30 m, MARV's step-up limit, in both directions)
+# Generated from this file with a script; edit here, not in the generated gen_config copy.
+name: mixed_v3_straight
+seed: 2027
+cell_size: 0.05
+repeats: 10
+bidirectional: true
+spawn_lateral_jitter: 0.15
+tile: {width: 8.8, depth: 3.333333333333}
+border_width: 2.0
+arena_band: {wall_height: 1.0, wall_width: 0.2}
+base_z: 0.5
+camera:
+  position: [-40, 40, 25]
+  target: [0, 5, -5]
+rows:
+- type: raised_platform
+  min_height: 0.2
+  max_height: 0.26
+  extra:
+    edge_lip: true
+    platform_width: 2.0
+    sample:
+      platform_width: [1.0, 2.6]
+      exit_height_ratio: [0.5, 1.15]
+- type: lowered_platform
+  name: pit
+  min_height: 0.18
+  max_height: 0.3
+  extra:
+    edge_lip: true
+    pit_width: 1.6
+    sample:
+      pit_width: [1.0, 2.0]
+- type: double_trench
+  min_height: 0.15
+  max_height: 0.28
+  extra:
+    edge_lip: true
+    trench_width: 1.0
+    middle_width: 1.0
+    sample:
+      middle_width: [0.6, 1.5]
+- type: widening_trench
+  name: drive_trench
+  extra: {edge_lip: true, trench_depth: 0.25, min_width: 0.6, max_width: 1.5}
+- type: widening_trench
+  name: deep_gap
+  extra: {edge_lip: true, trench_depth: 0.6, min_width: 0.15, max_width: 0.45}
+- type: log_crossing
+  min_height: 0.1
+  max_height: 0.28
+  extra: {edge_lip: true, log_length: 1.5, log_width: 0.25}
+- type: twin_rails
+  min_height: 0.15
+  max_height: 0.3
+  extra: {edge_lip: true, rail_width: 0.4, gap_width: 1.5, wall_height: 0.25}
+- type: round_log
+  min_height: 0.15
+  max_height: 0.28
+  extra: {edge_lip: true}
+- type: round_log
+  min_height: 0.15
+  max_height: 0.28
+  extra: {edge_lip: true, lowered: true}
+  name: round_log_lowered
+- type: round_log
+  name: diagonal_log
+  min_height: 0.15
+  max_height: 0.25
+  extra: {edge_lip: true, min_yaw: 20, max_yaw: 45, mirror_alternate: true}
+- type: round_log
+  name: diagonal_log_lowered
+  min_height: 0.15
+  max_height: 0.25
+  extra: {edge_lip: true, min_yaw: 20, max_yaw: 45, mirror_alternate: true, lowered: true}
+- type: diagonal_trunk
+  min_height: 0.2
+  max_height: 0.3
+  extra: {edge_lip: true, min_angle: 15, max_angle: 45, trunk_width: 0.35, wall_height: 0.2, mirror_alternate: true}
+- type: raised_stairs
+  min_height: 0.4
+  max_height: 0.68
+  extra:
+    edge_lip: true
+    n_steps: 4
+    step_length: 0.3
+    platform_length: 0.6
+    sample:
+      platform_length: [0.4, 1.0]
+- type: lowered_stairs
+  min_height: 0.4
+  max_height: 0.64
+  extra:
+    edge_lip: true
+    n_steps: 4
+    step_length: 0.28
+    platform_length: 0.6
+    sample:
+      platform_length: [0.4, 1.0]
+- type: raised_stairs
+  name: steep_stairs
+  min_height: 0.44
+  max_height: 0.64
+  extra:
+    edge_lip: true
+    n_steps: 4
+    step_length: 0.26
+    platform_length: 0.6
+    sample:
+      platform_length: [0.4, 1.0]
+- type: stairs_ascent_descent
+  min_height: 0.4
+  max_height: 0.68
+  extra: {edge_lip: true, n_steps: 4, step_length: 0.3}
+- type: diagonal_stairs
+  min_height: 0.3
+  max_height: 0.45
+  extra:
+    edge_lip: true
+    n_steps: 3
+    step_length: 0.3
+    platform_length: 0.6
+    min_yaw: 15
+    max_yaw: 35
+    mirror_alternate: true
+    sample:
+      platform_length: [0.4, 1.0]
+- type: cobblestones
+  min_height: 0.15
+  max_height: 0.3
+  extra: {edge_lip: true, grid_n: 11, max_step: 0.12}
+- type: cobblestones
+  min_height: 0.15
+  max_height: 0.3
+  extra: {edge_lip: true, grid_n: 11, max_step: 0.12, lowered: true}
+  name: cobblestones_lowered
+- type: cobblestones
+  name: coarse_cobbles
+  min_height: 0.15
+  max_height: 0.3
+  extra: {edge_lip: true, grid_n: 5, max_step: 0.15}
+- type: cobblestones
+  name: coarse_cobbles_lowered
+  min_height: 0.15
+  max_height: 0.3
+  extra: {edge_lip: true, grid_n: 5, max_step: 0.15, lowered: true}
+- type: stepfield
+  min_height: 0.15
+  max_height: 0.3
+  extra: {edge_lip: true}
+- type: stepfield
+  min_height: 0.15
+  max_height: 0.3
+  extra: {edge_lip: true, lowered: true}
+  name: stepfield_lowered
+- type: rock_formation
+  min_height: 0.25
+  max_height: 0.36
+  extra: {edge_lip: true, grid_n: 8, n_levels: 6, dropout: 0.35, coarse_n: 5}
+- type: rock_formation
+  min_height: 0.25
+  max_height: 0.36
+  extra: {edge_lip: true, grid_n: 8, n_levels: 6, dropout: 0.35, coarse_n: 5, lowered: true}
+  name: rock_formation_lowered
+- type: diagonal_pyramid
+  min_height: 0.2
+  max_height: 0.45
+  extra: {edge_lip: true, n_rows: 13, hidden_layers: 4}
+- type: diagonal_pyramid
+  min_height: 0.2
+  max_height: 0.45
+  extra: {edge_lip: true, n_rows: 13, hidden_layers: 4, lowered: true}
+  name: diagonal_pyramid_lowered
+- type: half_platform
+  min_height: 0.15
+  max_height: 0.3
+  extra:
+    edge_lip: true
+    field_size: 3.0
+    sample:
+      field_size: [2.0, 3.0]
+- type: half_platform
+  min_height: 0.15
+  max_height: 0.3
+  extra:
+    edge_lip: true
+    field_size: 3.0
+    sample:
+      field_size: [2.0, 3.0]
+    lowered: true
+  name: half_platform_lowered
+- type: stump
+  min_height: 0.2
+  max_height: 0.35
+  extra: {friction: 2.0}
+- type: stump_field
+  min_height: 0.2
+  max_height: 0.35
+  extra: {friction: 2.0, mirror_alternate: true, mesh_stride: 2}
+- type: stump_field
+  min_height: 0.2
+  max_height: 0.35
+  extra: {friction: 2.0, mirror_alternate: true, mesh_stride: 2, lowered: true}
+  name: stump_field_lowered
+- type: pitch_ramp
+  name: ridge_ramp
+  extra: {friction: 2.0, shape: A, min_angle: 8, max_angle: 30, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
+- type: pitch_ramp
+  name: valley_ramp
+  extra: {friction: 2.0, shape: V, min_angle: 8, max_angle: 30, ramp_length: 1.2, plateau_length: 1.0, mesh_stride: 2}
+- type: diagonal_ramp
+  extra: {friction: 2.0, min_angle: 10, max_angle: 22, min_yaw: 15, max_yaw: 35, mirror_alternate: true, mesh_stride: 2}
+- type: cross_slope
+  extra: {friction: 2.0, min_roll: 8, max_roll: 25, mirror_alternate: true, mesh_stride: 2}
+- type: crossing_ramps
+  extra: {min_angle: 4, max_angle: 10, wedge_length: 0.6, n_wedges: 6, mirror_alternate: true}
+- type: wave
+  min_height: 0.05
+  max_height: 0.2
+  extra: {wavelength: 1.2, n_periods: 3, min_yaw: 0, max_yaw: 25, mirror_alternate: true, mesh_stride: 2}
+- type: wave
+  min_height: 0.05
+  max_height: 0.2
+  extra: {wavelength: 1.2, n_periods: 3, min_yaw: 0, max_yaw: 25, mirror_alternate: true, mesh_stride: 2, lowered: true}
+  name: wave_lowered
+- type: tilted_pallet
+  extra: {edge_lip: true, min_pitch: 8, max_pitch: 18, min_yaw: 10, max_yaw: 30, mirror_alternate: true}
+- type: steep_hill
+  extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 16, max_angle: 30, min_ramp_length: 1.4, max_ramp_length: 1.8,
+    crest_length: 0.6, mesh_stride: 1}
+- type: twisted_hill
+  extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 14, max_angle: 28, min_roll: 6, max_roll: 14,
+    twist_periods: 1.5, min_ramp_length: 1.5, max_ramp_length: 1.8, crest_length: 0.6, mirror_alternate: true, mesh_stride: 1}
+- type: bumpy_hill
+  extra: {friction: 1.5, edge_lip: true, step_tread: 0.02, min_angle: 14, max_angle: 28, min_bump: 0.04, max_bump: 0.12,
+    n_bumps: 30, bump_band: 1.45, min_ramp_length: 1.5, max_ramp_length: 1.8, crest_length: 0.6, mesh_stride: 1}
+- type: sequence
+  name: log_then_step
+  extra:
+    edge_lip: true
+    parts:
+    - {type: flat_patch, width: 1.2}
+    - {type: round_log, min_height: 0.15, max_height: 0.22, width: 2.6}
+    - type: raised_platform
+      min_height: 0.15
+      max_height: 0.28
+      width: 2.4
+      extra: {platform_width: 1.0}
+    - {type: flat_patch, width: 2.6}
+- {type: flat_patch}
+feature_offset: {x: 0.5}
