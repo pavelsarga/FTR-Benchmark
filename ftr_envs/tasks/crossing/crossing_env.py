@@ -157,6 +157,14 @@ class CrossingEnvCfg(FtrEnvCfg):
     smooth_lam_m: float = 0.15     # spatial low-pass cutoff wavelength (m); 0.1-0.2 validated
     smooth_ds_m: float = 0.02      # spatial resampling step (m)
 
+    # Height-map crop centre this far AHEAD of the robot along its heading (m, a multiple of the
+    # 5 cm cell). 0 = centred (2.25 m map: 1.125 m ahead / behind). 0.25 shows 1.375 m ahead and
+    # 0.875 m behind: the front flipper tips (0.56 m ahead) then see a drop 0.815 m before reaching
+    # it instead of 0.565 m, and the rear tips (0.56 m behind) stay in view. Applied in
+    # FtrEnv.calc_current_frame_height_maps; every robot-centred index here uses hmap_robot_row.
+    # The other modules (creps, ctrac, pan_*) assume a centred robot, so only marv_rl allows it.
+    height_map_forward_offset: float = 0.0
+
     # Descent detector — for the action-bonus gating below and as a standalone diagnostic.
     # A cell is "ahead" if it is further toward the front of the yaw-aligned height map (row
     # 0) than the footprint's own front edge; the window is descent_lookahead_cells rows,
@@ -314,6 +322,18 @@ class CrossingEnv(FtrEnv):
             self.pitch_t = np.deg2rad(40)
         super().__init__(cfg, render_mode, **kwargs)
 
+        cell = self.height_map_length[0] / self.height_map_size[0]
+        shift = int(round(cfg.height_map_forward_offset / cell))
+        if abs(shift * cell - cfg.height_map_forward_offset) > 1e-6 or not 0 <= shift < self.height_map_size[0] // 2 - 8:
+            raise ValueError(f"height_map_forward_offset {cfg.height_map_forward_offset} must be a multiple of {cell} m "
+                             f"and leave the footprint + descent window inside the map")
+        if shift and cfg.module_name != "marv_rl":
+            raise ValueError(f"height_map_forward_offset is only supported by marv_rl, not {cfg.module_name}")
+        self.hmap_robot_row = self.height_map_size[0] // 2 + shift
+        if shift:
+            print(f"[crossing_env] height map shifted {cfg.height_map_forward_offset:.2f} m forward: robot at row "
+                  f"{self.hmap_robot_row} of {self.height_map_size[0]}", flush=True)
+
         # reward stuff — must be after super().__init__() so self.scene/num_envs/device exist
         self.prev_positions = torch.zeros((self.num_envs, 3), device=self.device)
         self.prev_lin_velocities = torch.zeros((self.num_envs, 3), device=self.device)
@@ -393,7 +413,7 @@ class CrossingEnv(FtrEnv):
         self.accel_mag = (self.robot_lin_velocities - self.prev_lin_velocities).norm(dim=-1) / dt
         self.shock_norm = ((self.accel_mag - cfg.shock_threshold).clamp(min=0.0) / cfg.shock_scale).clamp(max=1.0)
         ground_height = self.current_frame_height_maps[
-            :, self.height_map_size[0] // 2, self.height_map_size[1] // 2
+            :, self.hmap_robot_row, self.height_map_size[1] // 2
         ]
         self.clearance = self.positions[:, 2] - self.track_wheel_radius - ground_height
         self.flipper_torques = self._robot.data.applied_torque[:, self._flipper_joint_ids].abs()  # (N, 4)
@@ -626,9 +646,10 @@ class CrossingEnv(FtrEnv):
         H, W = self.height_map_size
         cell = self.height_map_length[0] / H
         fr, fc = cfg.tq_footprint_cells
-        r0, c0 = H // 2 - fr // 2, W // 2 - fc // 2
+        rr = self.hmap_robot_row  # H // 2 unless the crop is shifted forward
+        r0, c0 = rr - fr // 2, W // 2 - fc // 2
         ground = self.current_frame_height_maps[:, r0:r0 + fr, c0:c0 + fc]
-        xs = (H // 2 - torch.arange(r0, r0 + fr, device=self.device, dtype=torch.float32)) * cell
+        xs = (rr - torch.arange(r0, r0 + fr, device=self.device, dtype=torch.float32)) * cell
         ys = (torch.arange(c0, c0 + fc, device=self.device, dtype=torch.float32) - W // 2) * cell
         underside = (
             self.positions[:, 2, None, None]
@@ -843,7 +864,7 @@ class CrossingEnv(FtrEnv):
             h_pitch = self.orientations_3[healthy, 1].abs()
             h_dist = (self.target_positions[healthy, :2] - self.positions[healthy, :2]).norm(dim=-1)
             ground_h = self.current_frame_height_maps[
-                healthy, self.height_map_size[0] // 2, self.height_map_size[1] // 2
+                healthy, self.hmap_robot_row, self.height_map_size[1] // 2
             ]
             h_clearance = (self.positions[healthy, 2] - self.track_wheel_radius) - ground_h
 

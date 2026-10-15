@@ -904,6 +904,15 @@ class FtrEnv(DirectRLEnv):
                 continue
 
             angle = torch.rad2deg(self.orientations_3[i]).cpu().numpy()[2]
+            # CrossingEnvCfg.height_map_forward_offset (m): the crop centre sits this far ahead of
+            # the robot along its heading, so the map shows more ahead and less behind; the robot
+            # is then at row H//2 + offset/cell (CrossingEnv.hmap_robot_row), not at the centre.
+            fwd = getattr(self.cfg, "height_map_forward_offset", 0.0)
+            if fwd:
+                yaw = np.deg2rad(angle)
+                pos = pos.clone()
+                pos[0] += fwd * float(np.cos(yaw))
+                pos[1] += fwd * float(np.sin(yaw))
             local_map = self.terrain_cfg.map.get_obs(pos, angle, self.height_map_length)
             if local_map is None:
                 continue
