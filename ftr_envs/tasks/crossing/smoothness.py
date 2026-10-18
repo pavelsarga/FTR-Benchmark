@@ -123,7 +123,11 @@ class SmoothnessTracker:
         f = self._biquad(torch.stack([ang_vel_b[:, 1], ang_vel_b[:, 0], lin_vel_b[:, 0]], dim=-1))
         ang_acc = (f[:, :2] - self.tf1[:, :2]) / dt
         jerk = (f[:, 2] - 2.0 * self.tf1[:, 2] + self.tf2[:, 2]) / (dt * dt)
-        self.tf2, self.tf1 = self.tf1, f
+        # Every state update below is in place (copy_), never a rebinding: the eval rollout
+        # runs under torch.inference_mode, and a buffer rebound there becomes an inference
+        # tensor that the next in-place write outside it (training rollout, reset) rejects.
+        self.tf2.copy_(self.tf1)
+        self.tf1.copy_(f)
         cost[:, 0] = ang_acc[:, 0].square() * dt
         cost[:, 1] = ang_acc[:, 1].square() * dt
         cost[:, 2] = jerk.square() * dt
@@ -150,15 +154,16 @@ class SmoothnessTracker:
             mm = m[:, None]
             self.ema[:, 0] = torch.where(mm, e0, self.ema[:, 0])
             self.ema[:, 1] = torch.where(mm, e1, self.ema[:, 1])
-            self.g2 = torch.where(mm, self.g1, self.g2)
-            self.g1 = torch.where(mm, e1, self.g1)
-            self.n_grid = self.n_grid + m.long()
-        self.s_acc = torch.where(jumped, 0.0, total - n_cross.float() * self.ds)
-        self.n_grid = torch.where(jumped, 0, self.n_grid)
-        self.ema = torch.where(jumped[:, None, None], sp[:, None, :].expand(-1, 2, -1), self.ema)
-        self.g1 = torch.where(jumped[:, None], sp, self.g1)
-        self.g2 = torch.where(jumped[:, None], sp, self.g2)
-        self.prev_pos, self.prev_sp = pos.clone(), sp
+            self.g2.copy_(torch.where(mm, self.g1, self.g2))
+            self.g1.copy_(torch.where(mm, e1, self.g1))
+            self.n_grid.add_(m.long())
+        self.s_acc.copy_(torch.where(jumped, 0.0, total - n_cross.float() * self.ds))
+        self.n_grid.masked_fill_(jumped, 0)
+        self.ema.copy_(torch.where(jumped[:, None, None], sp[:, None, :].expand(-1, 2, -1), self.ema))
+        self.g1.copy_(torch.where(jumped[:, None], sp, self.g1))
+        self.g2.copy_(torch.where(jumped[:, None], sp, self.g2))
+        self.prev_pos.copy_(pos)
+        self.prev_sp.copy_(sp)
 
         cost = torch.nan_to_num(cost, nan=0.0, posinf=self.max_cost).clamp(max=self.max_cost)
         self.step_cost += cost
