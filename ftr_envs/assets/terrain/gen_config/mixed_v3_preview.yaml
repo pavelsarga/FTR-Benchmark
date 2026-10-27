@@ -1,0 +1,100 @@
+# LOCAL PREVIEW of mixed_v3_straight for the 8 GB laptop teleop (the full course does not fit) -- not for training
+name: mixed_v3_preview
+seed: 2027
+cell_size: 0.05
+repeats: 5
+bidirectional: true
+spawn_lateral_jitter: 0.15
+tile: {width: 8.8, depth: 3.333333333333}
+border_width: 2.0
+arena_band: {wall_height: 1.0, wall_width: 0.2}
+base_z: 0.5
+camera:
+  position: [-40, 40, 25]
+  target: [0, 5, -5]
+rows:
+- type: raised_platform
+  min_height: 0.2
+  max_height: 0.26
+  extra:
+    edge_lip: true
+    platform_width: 2.0
+    sample:
+      platform_width: [1.0, 2.6]
+      exit_height_ratio: [0.5, 1.15]
+- type: lowered_platform
+  name: pit
+  min_height: 0.18
+  max_height: 0.3
+  extra:
+    edge_lip: true
+    pit_width: 1.6
+    sample:
+      pit_width: [1.0, 2.0]
+- type: round_log
+  min_height: 0.15
+  max_height: 0.28
+  extra: {edge_lip: true, lowered: true}
+  name: round_log_lowered
+- type: round_log
+  name: diagonal_log_lowered
+  min_height: 0.15
+  max_height: 0.25
+  extra: {edge_lip: true, min_yaw: 20, max_yaw: 45, mirror_alternate: true, lowered: true}
+- type: raised_stairs
+  min_height: 0.4
+  max_height: 0.68
+  extra:
+    edge_lip: true
+    n_steps: 4
+    step_length: 0.3
+    platform_length: 0.6
+    sample:
+      platform_length: [0.4, 1.0]
+- type: cobblestones
+  min_height: 0.15
+  max_height: 0.3
+  extra: {edge_lip: true, grid_n: 11, max_step: 0.12, lowered: true}
+  name: cobblestones_lowered
+- type: cobblestones
+  name: coarse_cobbles_lowered
+  min_height: 0.15
+  max_height: 0.3
+  extra: {edge_lip: true, grid_n: 5, max_step: 0.15, lowered: true}
+- type: stepfield
+  min_height: 0.15
+  max_height: 0.3
+  extra: {edge_lip: true, lowered: true}
+  name: stepfield_lowered
+- type: rock_formation
+  min_height: 0.25
+  max_height: 0.36
+  extra: {edge_lip: true, grid_n: 8, n_levels: 6, dropout: 0.35, coarse_n: 5, lowered: true}
+  name: rock_formation_lowered
+- type: diagonal_pyramid
+  min_height: 0.2
+  max_height: 0.45
+  extra: {edge_lip: true, n_rows: 13, hidden_layers: 4, lowered: true}
+  name: diagonal_pyramid_lowered
+- type: half_platform
+  min_height: 0.15
+  max_height: 0.3
+  extra:
+    edge_lip: true
+    field_size: 3.0
+    sample:
+      field_size: [2.0, 3.0]
+    lowered: true
+  name: half_platform_lowered
+- type: stump_field
+  min_height: 0.2
+  max_height: 0.35
+  extra: {friction: 2.0, mirror_alternate: true, mesh_stride: 2, lowered: true}
+  name: stump_field_lowered
+- type: wave
+  min_height: 0.05
+  max_height: 0.2
+  extra: {wavelength: 1.2, n_periods: 3, min_yaw: 0, max_yaw: 25, mirror_alternate: true, mesh_stride: 2, lowered: true}
+  name: wave_lowered
+- {type: flat_patch}
+feature_offset: {x: 0.5}
