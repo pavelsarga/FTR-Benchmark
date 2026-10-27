@@ -84,11 +84,40 @@ class ILVelocity(VelocityController):
         return self.net(hm_hist, proprio_hist).reshape(-1).clamp(0.0, self.v_max)
 
 
+class AgentVelocity(ILVelocity):
+    """type rl: the speed comes from a learning agent the trainer attaches (flipper_training's
+    velocity_rl.VelocityAgent, co-trained with the flipper policy). Until one is attached -- eval
+    and validation subprocesses -- it is the exported net `weights`, exactly as type il.
+
+    The env also calls end_step() once per control step, after its dones and before its resets,
+    so the agent can close the step's transition with its own reward."""
+
+    def __init__(self, num_envs, device, weights: str, v_max: float = 1.0):
+        super().__init__(num_envs, device, weights, v_max)
+        self.agent = None
+
+    def attach(self, agent):
+        self.agent = agent
+
+    def __call__(self, hm_hist, proprio_hist):
+        if self.agent is None:
+            return super().__call__(hm_hist, proprio_hist)
+        return self.agent.act(hm_hist, proprio_hist)
+
+    def reset(self, env_ids):
+        if self.agent is not None:
+            self.agent.reset(env_ids)
+
+    def end_step(self, positions_xy, ang_vel_body, success, fail, timeout, abort=None):
+        if self.agent is not None:
+            self.agent.end_step(positions_xy, ang_vel_body, success, fail, timeout, abort)
+
+
 def make_velocity_controller(spec: dict, num_envs: int, device) -> VelocityController:
     spec = dict(spec)
     kind = spec.pop("type")
     spec.pop("history", None)
-    classes = {"const": ConstVelocity, "random": RandomVelocity, "il": ILVelocity}
+    classes = {"const": ConstVelocity, "random": RandomVelocity, "il": ILVelocity, "rl": AgentVelocity}
     if kind not in classes:
         raise ValueError(f"velocity_controller.type {kind!r}: expected one of {sorted(classes)}")
     return classes[kind](num_envs, device, **spec)

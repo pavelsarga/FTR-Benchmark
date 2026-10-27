@@ -391,6 +391,12 @@ class CrossingEnv(FtrEnv):
         cfg = self.cfg
         terminal = self._explosion_mask | self._fail_mask
         healthy = ~terminal
+        # velocity_controller {type: rl}: the speed agent closes this step's transition here --
+        # the dones are known, the resets have not happened yet (robot_ang_velocities is body frame)
+        vel_ctrl = getattr(self, "_vel_ctrl", None)
+        if vel_ctrl is not None and hasattr(vel_ctrl, "end_step"):
+            vel_ctrl.end_step(self.positions[:, :2], self.robot_ang_velocities, self._success_mask,
+                              self._fail_mask, self._timeout_mask, abort=self._explosion_mask)
 
         # ------------------------------------------------------------------
         # Helper: mean / (mean, max, min) over healthy robots, or 0.0 if none are healthy.
