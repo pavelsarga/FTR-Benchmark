@@ -28,7 +28,9 @@ from omni.isaac.lab.utils import configclass
 from ftr_envs.assets.articulation.ftr import FtrWheelArticulation
 from ftr_envs.assets.ftr import FTR_CFG, FTR_SIM_CFG
 from ftr_envs.assets.terrain.terrain import Terrain
+from ftr_envs.tasks.crossing.elevation_map_emulator import ElevationMapEmulator
 from ftr_envs.tasks.crossing.flipper_states import DEFAULT_FLIPPER_STATES_DEG, state_pose_targets, step_flipper_state
+from ftr_envs.tasks.crossing.velocity_control import FeatureHistory, bearing_heading, make_velocity_controller
 from ftr_envs.utils.torch import add_noise, rand_range
 
 _log = logging.getLogger(__name__)
@@ -99,11 +101,14 @@ class FtrEnvCfg(DirectRLEnvCfg):
 
     # MARV only: per-direction flipper angle limits (degrees). When all four are set,
     # replaces the symmetric ±flipper_pos_max_deg clamp with asymmetric per-pair limits.
-    # Convention (matches flipper_training / MARV URDF):
-    #   front up   = negative angle  → front_up_deg is the magnitude of the negative bound
-    #   front down = positive angle  → front_down_deg is the positive bound
-    #   rear  up   = positive angle  → back_up_deg is the positive bound
-    #   rear  down = negative angle  → back_down_deg is the magnitude of the negative bound
+    # Bounds, in the logical angle FtrWheelArticulation exposes (raw joint x [-1, -1, 1, 1]):
+    #   front: [-front_up_deg, +front_down_deg]
+    #   rear:  [-back_down_deg, +back_up_deg]
+    # ⚠ The front names are physically swapped. A positive logical angle raises BOTH pairs
+    # (measured on MARV: front +80 -> tip 0.38 m above the pivot, -60 -> 0.33 m below), so
+    # front_up_deg bounds how far the front goes DOWN and front_down_deg how far it goes UP.
+    # The rear names are correct. MARV's ROS/URDF joints use the raw convention (front
+    # negative = up, rear positive = up); the logical angle flips only the front.
     # None on any field disables the asymmetric mode and falls back to flipper_pos_max_deg.
     marv_flipper_front_up_deg: float | None = None
     marv_flipper_front_down_deg: float | None = None
@@ -119,6 +124,15 @@ class FtrEnvCfg(DirectRLEnvCfg):
     track_gauge: float | None = None
     track_vel_limit: float | None = None
     fixed_forward_vel: float | None = None  # if set, overrides policy linear velocity with this constant (m/s)
+    # Flipper-only policy (velocity_control.py): when set, the policy's action is the flippers
+    # alone and v comes from this controller, e.g. {type: il, weights: <file>.pt, history: 5},
+    # {type: random, low: 0.2, high: 0.6}, {type: const, value: 0.3}. Position mode only.
+    velocity_controller: dict | None = None
+    # heading for flipper-only policies: auto_ride's law, w = clamp(gain * bearing error, +-max_w)
+    heading_controller: dict | None = None
+    # elevation-map look for the observed heightmap (elevation_map_emulator.py), e.g.
+    # {k_dilate: 3, k_erode: 1, blur_sigma: 1.0}; None = Isaac's exact map
+    heightmap_emulation: dict | None = None
 
     # ctrac only: attaches a real ContactSensor for ground-truth per-flipper contact
     # (ctrac_contact.py). Default True (needed for training's reward/C-VAE targets). Set
@@ -308,6 +322,16 @@ class FtrEnv(DirectRLEnv):
         else:
             self.cfg.num_actions = self.flipper_num + 2   # +2 for track v, w
             self.cfg.num_observations += (-4 + self.flipper_num)
+        self.flipper_only = self.cfg.velocity_controller is not None
+        if self.flipper_only:
+            if self.cfg.flipper_style or self.cfg.flipper_control_mode != "position":
+                raise ValueError("velocity_controller needs flipper_control_mode='position' (and not flipper_style)")
+            if self.cfg.fixed_forward_vel is not None:
+                raise ValueError("velocity_controller and fixed_forward_vel both set the forward speed; pick one")
+            # the policy sees only the flippers; the internal action stays [v, w, flippers]
+            self.cfg.num_actions = self.flipper_num
+        self._hm_emulator = (ElevationMapEmulator(**self.cfg.heightmap_emulation)
+                             if self.cfg.heightmap_emulation is not None else None)
         self.track_wheel_radius = self.cfg.robot_render_config["track"]["render_radius"]
 
         super().__init__(cfg, render_mode, **kwargs)
@@ -376,6 +400,8 @@ class FtrEnv(DirectRLEnv):
         self.current_frame_height_maps = torch.zeros((self.num_envs, *self.height_map_size), device=self.device)
 
         self.last_action = torch.zeros(self.num_envs, self.cfg.num_actions, device=self.device)
+        if self.flipper_only:
+            self._setup_flipper_only()
         if self.cfg.flipper_control_mode == "state":
             low, high = self.flipper_angle_bounds()
             self.flipper_state_poses = state_pose_targets(self.cfg.flipper_states_deg, low, high)
@@ -586,6 +612,9 @@ class FtrEnv(DirectRLEnv):
         if self.cfg.flipper_control_mode == "state":
             self.flipper_state[env_ids] = 0
             self.flipper_state_cooldown[env_ids] = 0
+        if getattr(self, "flipper_only", False) and hasattr(self, "_vel_ctrl"):
+            self._vel_ctrl.reset(env_ids)
+            self._vel_hist.reset(env_ids)
 
         reset_infos = [self._reset_info_generate() for _ in range(n)]
         poses = torch.stack([i["pose"] for i in reset_infos]).to(self.device)
@@ -676,7 +705,37 @@ class FtrEnv(DirectRLEnv):
         # step, once the joints have actually moved.
         self.calc_current_frame_height_maps(env_ids=[int(i) for i in idx])
 
+    def _setup_flipper_only(self):
+        """Internal [v, w, flippers] buffers (the base class sized them for the policy's flippers
+        only), the velocity controller and its input history."""
+        n_full = self.flipper_num + 2
+        self.actions = torch.zeros(self.num_envs, n_full, device=self.device)
+        self.last_action = torch.zeros(self.num_envs, n_full, device=self.device)
+        spec = dict(self.cfg.velocity_controller)
+        self._vel_hist = FeatureHistory(self.num_envs, int(spec.get("history", 5)), self.height_map_size, self.device)
+        self._vel_ctrl = make_velocity_controller(spec, self.num_envs, self.device)
+        self._prev_flipper_positions = torch.zeros(self.num_envs, self.flipper_num, device=self.device)
+        self._heading ={"gain": 1.5, "max_w": 1.0, **(self.cfg.heading_controller or {})}
+        print(f"[FtrEnv] flipper-only policy: v from {spec}, w from bearing law {self._heading}, "
+              f"heightmap emulation {self.cfg.heightmap_emulation}", flush=True)
+
+    def _flipper_only_actions(self, flipper_actions: torch.Tensor) -> torch.Tensor:
+        """[v, w, flippers] from the policy's flippers: v from the velocity controller, w from the
+        heading law, both computed on the state at the start of this control step."""
+        # measured flipper velocity over the last control step; 0 on an env's first step (fresh history)
+        flip_vel = (self.flipper_positions - self._prev_flipper_positions) / self.step_dt
+        flip_vel[self._vel_hist.fresh] = 0.0
+        self._prev_flipper_positions[:] = self.flipper_positions
+        rel_hm = self.current_frame_height_maps - (self.positions[:, 2] - self.track_wheel_radius)[:, None, None]
+        proprio = torch.cat([self.robot_lin_velocities[:, :1], self.last_action[:, :1], flip_vel, self.flipper_positions], dim=-1)
+        self._vel_hist.push(rel_hm, proprio)
+        v = self._vel_ctrl(self._vel_hist.hm, self._vel_hist.proprio).clamp(-self.track_vel_max, self.track_vel_max)
+        w = bearing_heading(self.positions, self.orientations_3[:, 2], self.target_positions, **self._heading)
+        return torch.cat([v.unsqueeze(-1), (w / self.track_ang_vel_max).unsqueeze(-1), flipper_actions], dim=-1)
+
     def _pre_physics_step(self, actions: torch.Tensor):
+        if self.flipper_only:
+            actions = self._flipper_only_actions(actions)
         self.actions[:] = actions
         self.last_action[:] = actions  # store raw action before noise 
 
@@ -795,8 +854,9 @@ class FtrEnv(DirectRLEnv):
         )
         dtype = self.flipper_target_pos.dtype
         if self.cfg.robot_type == "marv" and all(v is not None for v in marv_limits):
-            # Asymmetric per-pair limits for MARV: up = negative angle, down = positive
-            # angle for front; up = positive angle, down = negative angle for rear.
+            # Asymmetric per-pair limits for MARV: low = -front_up / -back_down, high =
+            # front_down / back_up. Positive logical angle = up for both pairs, so the front
+            # "up"/"down" names are swapped physically (see marv_flipper_front_up_deg).
             # The target's width/ordering depends on sync_flipper_control/only_front_flipper
             # (see get_flipper_pos()) — mirror that same branching here so low/high always
             # match the target's actual per-flipper layout.
@@ -897,6 +957,14 @@ class FtrEnv(DirectRLEnv):
         """
         lower = self.terrain_cfg.map.lower
         upper = self.terrain_cfg.map.upper
+        # heightmap_emulation: crop `margin` cells wider on every side so the emulator's filters see
+        # real terrain past the window edge, emulate all envs in one batch, crop back
+        emu = getattr(self, "_hm_emulator", None)
+        m = emu.margin if emu is not None else 0
+        cell = self.terrain_cfg.map.cell_size
+        crop_length = (self.height_map_length[0] + 2 * m * cell, self.height_map_length[1] + 2 * m * cell)
+        crop_size = (self.height_map_size[0] + 2 * m, self.height_map_size[1] + 2 * m)
+        emu_ids, emu_maps = [], []
         for i in (range(self.num_envs) if env_ids is None else env_ids):
             pos = self.positions[i].cpu()
             if not (lower[0] < pos[0] < upper[0]) or not (lower[1] < pos[1] < upper[1]):
@@ -913,11 +981,11 @@ class FtrEnv(DirectRLEnv):
                 pos = pos.clone()
                 pos[0] += fwd * float(np.cos(yaw))
                 pos[1] += fwd * float(np.sin(yaw))
-            local_map = self.terrain_cfg.map.get_obs(pos, angle, self.height_map_length)
+            local_map = self.terrain_cfg.map.get_obs(pos, angle, crop_length)
             if local_map is None:
                 continue
 
-            if local_map.shape != self.height_map_size:
+            if local_map.shape != crop_size:
                 carb.log_error("Your map doesn't seem big enough.")
                 continue
 
@@ -929,7 +997,13 @@ class FtrEnv(DirectRLEnv):
             # has to mirror the lateral axis because of it (grid_map puts col 0 at +y; see
             # marv_rl_training/training/ftr_heightmap_window.py). Verified by probing
             # MapHelper.get_obs with an asymmetric map, not inferred from this comment.
-            self.current_frame_height_maps[i, :, :] = local_map.flip(0)
+            if m:
+                emu_ids.append(i)
+                emu_maps.append(local_map.flip(0))
+            else:
+                self.current_frame_height_maps[i, :, :] = local_map.flip(0)
+        if emu_ids:
+            self.current_frame_height_maps[emu_ids] = emu(torch.stack(emu_maps))
 
     @cached_property
     def max_episode_length(self):

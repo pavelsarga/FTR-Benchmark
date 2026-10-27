@@ -31,7 +31,15 @@ class MarvRLFlatObservation(Observation):
             # FtrTorchRLEnv has no action_spec yet at this point; the Isaac-free inference stubs
             # have no ftr_env.
             ftr_env = getattr(self.env, "ftr_env", None)
-            num_actions = ftr_env.unwrapped.cfg.num_actions if ftr_env is not None else self.env.action_spec.shape[-1]
+            # the observation carries env.last_action, which stays [v, w, flippers] for a flipper-only
+            # policy (velocity_controller) whose own action is the flippers alone; the diffusion
+            # inference stub fakes only ftr_env.unwrapped.cfg.num_actions, no last_action
+            if ftr_env is None:
+                num_actions = self.env.action_spec.shape[-1]
+            elif hasattr(ftr_env.unwrapped, "last_action"):
+                num_actions = ftr_env.unwrapped.last_action.shape[-1]
+            else:
+                num_actions = ftr_env.unwrapped.cfg.num_actions
             self.dim = 945 + 15 + num_actions
 
     def get_spec(self) -> Unbounded:
