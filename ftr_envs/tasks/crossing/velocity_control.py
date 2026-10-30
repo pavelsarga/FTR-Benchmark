@@ -5,7 +5,8 @@ owns /cmd_vel and the policy only moves the flippers. Training it with [v, w, fl
 evaluates it in a loop it never trained in. With `velocity_controller` set, FtrEnv exposes only
 the flipper actions to the policy and fills v and w in itself, every control step:
 
-    v  from a VelocityController   const | random | il (the pretrained velocity network)
+    v  from a VelocityController   const | random | il (the pretrained velocity network) |
+                                   rl (il, fine-tuned by a co-trained agent) | rule (velocity_rules.py)
     w  from the auto_ride heading law, ported: w = clamp(gain * bearing error, +-max_w), with the
        bearing measured to the env's goal (auto_ride aims at the next obstacle's beginning; on a
        straight FTR tile that is the same line)
@@ -22,10 +23,15 @@ ILVelocity consumes the same features the Gazebo dataset is built from
                             flipper angle x 4 (logical convention: positive = up, rad)
 and the network file is a TorchScript module mapping (hm, proprio) -> v [N] with its input
 normalisation baked in (written by flipper_training's train_velocity_il.py).
+
+Every controller also gets `state` -- {rpy [N, 3] rad, ang_vel [N, 3] body rad/s, w_cmd [N] rad/s,
+dt s} -- which only RuleVelocity reads.
 """
 import math
 
 import torch
+
+from ftr_envs.tasks.crossing.velocity_rules import Inputs, RuleSpeed, load_rule_config
 
 PROPRIO_DIM = 10
 
@@ -40,7 +46,7 @@ class VelocityController:
     def reset(self, env_ids):
         pass
 
-    def __call__(self, hm_hist: torch.Tensor, proprio_hist: torch.Tensor) -> torch.Tensor:
+    def __call__(self, hm_hist: torch.Tensor, proprio_hist: torch.Tensor, state: dict | None = None) -> torch.Tensor:
         raise NotImplementedError
 
 
@@ -49,7 +55,7 @@ class ConstVelocity(VelocityController):
         super().__init__(num_envs, device)
         self.value = float(value)
 
-    def __call__(self, hm_hist, proprio_hist):
+    def __call__(self, hm_hist, proprio_hist, state=None):
         return torch.full((self.num_envs,), self.value, device=self.device)
 
 
@@ -66,7 +72,7 @@ class RandomVelocity(VelocityController):
     def reset(self, env_ids):
         self.v[env_ids] = torch.empty(len(env_ids), device=self.device).uniform_(self.low, self.high)
 
-    def __call__(self, hm_hist, proprio_hist):
+    def __call__(self, hm_hist, proprio_hist, state=None):
         if self.change_prob > 0:
             redraw = torch.rand(self.num_envs, device=self.device) < self.change_prob
             self.v[redraw] = torch.empty(int(redraw.sum()), device=self.device).uniform_(self.low, self.high)
@@ -80,7 +86,7 @@ class ILVelocity(VelocityController):
         self.v_max = float(v_max)
 
     @torch.no_grad()
-    def __call__(self, hm_hist, proprio_hist):
+    def __call__(self, hm_hist, proprio_hist, state=None):
         return self.net(hm_hist, proprio_hist).reshape(-1).clamp(0.0, self.v_max)
 
 
@@ -99,7 +105,7 @@ class AgentVelocity(ILVelocity):
     def attach(self, agent):
         self.agent = agent
 
-    def __call__(self, hm_hist, proprio_hist):
+    def __call__(self, hm_hist, proprio_hist, state=None):
         if self.agent is None:
             return super().__call__(hm_hist, proprio_hist)
         return self.agent.act(hm_hist, proprio_hist)
@@ -113,11 +119,40 @@ class AgentVelocity(ILVelocity):
             self.agent.end_step(positions_xy, ang_vel_body, success, fail, timeout, abort)
 
 
+class RuleVelocity(VelocityController):
+    """type rule: the rule-based controller of velocity_rules.py -- the code robot_rodeo_gym's
+    velocity_rule_node runs in Gazebo, on the same YAML (`config`, e.g. configs/velocity_rule/default.yaml,
+    with `overrides` deep-merged on top). Only the newest history frame is read, so history: 1 suffices."""
+
+    def __init__(self, num_envs, device, config: str, overrides: dict | None = None):
+        super().__init__(num_envs, device)
+        self.rules = RuleSpeed(load_rule_config(config, _plain(overrides or {})), num_envs, device)
+
+    def reset(self, env_ids):
+        self.rules.reset(env_ids)
+
+    def __call__(self, hm_hist, proprio_hist, state=None):
+        p = proprio_hist[:, -1]
+        x = Inputs(hm=hm_hist[:, -1] if self.rules.uses_map else None, v_meas=p[:, 0], flip_vel=p[:, 2:6],
+                   rpy=state["rpy"], ang_vel=state["ang_vel"], w_cmd=state["w_cmd"])
+        return self.rules(x, state["dt"])
+
+
+def _plain(o):
+    """OmegaConf containers (a config's velocity_controller block) -> dict / list, for the deep merge."""
+    if hasattr(o, "items"):
+        return {k: _plain(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)) or type(o).__name__ == "ListConfig":
+        return [_plain(v) for v in o]
+    return o
+
+
 def make_velocity_controller(spec: dict, num_envs: int, device) -> VelocityController:
     spec = dict(spec)
     kind = spec.pop("type")
     spec.pop("history", None)
-    classes = {"const": ConstVelocity, "random": RandomVelocity, "il": ILVelocity, "rl": AgentVelocity}
+    classes = {"const": ConstVelocity, "random": RandomVelocity, "il": ILVelocity, "rl": AgentVelocity,
+               "rule": RuleVelocity}
     if kind not in classes:
         raise ValueError(f"velocity_controller.type {kind!r}: expected one of {sorted(classes)}")
     return classes[kind](num_envs, device, **spec)

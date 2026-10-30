@@ -729,8 +729,9 @@ class FtrEnv(DirectRLEnv):
         rel_hm = self.current_frame_height_maps - (self.positions[:, 2] - self.track_wheel_radius)[:, None, None]
         proprio = torch.cat([self.robot_lin_velocities[:, :1], self.last_action[:, :1], flip_vel, self.flipper_positions], dim=-1)
         self._vel_hist.push(rel_hm, proprio)
-        v = self._vel_ctrl(self._vel_hist.hm, self._vel_hist.proprio).clamp(-self.track_vel_max, self.track_vel_max)
         w = bearing_heading(self.positions, self.orientations_3[:, 2], self.target_positions, **self._heading)
+        state = {"rpy": self.orientations_3, "ang_vel": self.robot_ang_velocities, "w_cmd": w, "dt": self.step_dt}
+        v = self._vel_ctrl(self._vel_hist.hm, self._vel_hist.proprio, state).clamp(-self.track_vel_max, self.track_vel_max)
         return torch.cat([v.unsqueeze(-1), (w / self.track_ang_vel_max).unsqueeze(-1), flipper_actions], dim=-1)
 
     def _pre_physics_step(self, actions: torch.Tensor):
