@@ -150,7 +150,8 @@ def _plain(o):
 def make_velocity_controller(spec: dict, num_envs: int, device) -> VelocityController:
     spec = dict(spec)
     kind = spec.pop("type")
-    spec.pop("history", None)
+    spec.pop("history", None)           # FtrEnv's: the feature history length
+    spec.pop("policy_actions", None)    # FtrEnv's: flippers | full (the policy's own v, w discarded)
     classes = {"const": ConstVelocity, "random": RandomVelocity, "il": ILVelocity, "rl": AgentVelocity,
                "rule": RuleVelocity}
     if kind not in classes:

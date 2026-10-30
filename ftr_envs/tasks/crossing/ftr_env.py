@@ -323,13 +323,21 @@ class FtrEnv(DirectRLEnv):
             self.cfg.num_actions = self.flipper_num + 2   # +2 for track v, w
             self.cfg.num_observations += (-4 + self.flipper_num)
         self.flipper_only = self.cfg.velocity_controller is not None
+        # velocity_controller.policy_actions: full -- a policy trained to drive itself keeps its
+        # [v, w, flippers] action, and its v and w are discarded for the controller's, the way Gazebo
+        # runs it (auto_ride and a speed source drive, the policy only moves the flippers)
+        policy_actions = (self.cfg.velocity_controller or {}).get("policy_actions", "flippers")
+        if policy_actions not in ("flippers", "full"):
+            raise ValueError(f"velocity_controller.policy_actions {policy_actions!r}: expected flippers or full")
+        self.policy_full_action = self.flipper_only and policy_actions == "full"
         if self.flipper_only:
             if self.cfg.flipper_style or self.cfg.flipper_control_mode != "position":
                 raise ValueError("velocity_controller needs flipper_control_mode='position' (and not flipper_style)")
             if self.cfg.fixed_forward_vel is not None:
                 raise ValueError("velocity_controller and fixed_forward_vel both set the forward speed; pick one")
-            # the policy sees only the flippers; the internal action stays [v, w, flippers]
-            self.cfg.num_actions = self.flipper_num
+            # the policy sees only the flippers (or ignores its own v, w); the internal action stays [v, w, flippers]
+            if not self.policy_full_action:
+                self.cfg.num_actions = self.flipper_num
         self._hm_emulator = (ElevationMapEmulator(**self.cfg.heightmap_emulation)
                              if self.cfg.heightmap_emulation is not None else None)
         self.track_wheel_radius = self.cfg.robot_render_config["track"]["render_radius"]
@@ -736,7 +744,7 @@ class FtrEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor):
         if self.flipper_only:
-            actions = self._flipper_only_actions(actions)
+            actions = self._flipper_only_actions(actions[:, 2:] if self.policy_full_action else actions)
         self.actions[:] = actions
         self.last_action[:] = actions  # store raw action before noise 
 

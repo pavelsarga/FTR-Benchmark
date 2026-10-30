@@ -1,4 +1,4 @@
-"""Rule-based forward-speed controller: v_default reduced by weighted, configurable criteria.
+"""V-Gov, the rule-based forward-speed governor: v_default reduced by weighted, configurable criteria.
 
 One implementation for Isaac (velocity_control.RuleVelocity) and Gazebo / the robot
 (robot_rodeo_gym's velocity_rule_node, which loads this file by path): torch, math and yaml only,
