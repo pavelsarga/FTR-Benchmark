@@ -11,6 +11,8 @@ with an optional EMA of the metric (tau, s). Its factor is 1 - weight * r, so th
 largest fraction of the speed it can take away. One tick:
 
     v* = v_default * prod(factors), not below v_min
+                  predictive_combine: strongest -- the map criteria give only their smallest factor
+                  instead of their product (a log is a step *and* rough: one reduction, not two)
     stall guard   measured v < stall.v while commanded >= v_min for stall.after_s
                   -> v* >= stall.boost for stall.boost_s (rules must not pin the robot on an edge)
     caps          a criterion with `cap` and r = 1 limits v* to cap, also below v_min (special cases)
@@ -51,7 +53,8 @@ import yaml
 HM_ROWS, HM_COLS, HM_RES = 45, 21, 0.05
 CENTER_ROW, CENTER_COL = HM_ROWS // 2, HM_COLS // 2
 
-TOP_KEYS = {"v_default", "v_min", "predictive", "distrust_map_at", "footprint", "slew", "stall", "criteria"}
+TOP_KEYS = {"v_default", "v_min", "predictive", "predictive_combine", "distrust_map_at", "footprint", "slew", "stall",
+            "criteria"}
 CRITERION_KEYS = {"weight", "mode", "lo", "hi", "trip", "release", "hold_s", "tau", "cap", "enabled"}   # not on/off: YAML booleans
 DISTRUSTED = ("step_up", "step_down", "roughness")
 
@@ -187,8 +190,8 @@ KINDS = {   # name: (metric builder, its own config keys, predictive)
 class Criterion:
     """metric -> ratio in [0, 1] (linear or bang with hysteresis and hold), per-env state for EMA / latch."""
 
-    def __init__(self, name, c, metric, num_envs, device):
-        self.name, self.metric = name, metric
+    def __init__(self, name, c, metric, predictive, num_envs, device):
+        self.name, self.metric, self.predictive = name, metric, predictive
         self.weight = float(c["weight"])
         self.mode = c["mode"]
         if self.mode == "linear":
@@ -241,6 +244,9 @@ class RuleSpeed:
         self.n, self.device = num_envs, device
         self.v_default, self.v_min = float(cfg["v_default"]), float(cfg["v_min"])
         self.predictive = bool(cfg.get("predictive", True))
+        self.combine = cfg.get("predictive_combine", "product")
+        if self.combine not in ("product", "strongest"):
+            raise ValueError(f"predictive_combine {self.combine!r}: expected product or strongest")
         fp = cfg.get("footprint", {"x": [-0.35, 0.35], "half_width": 0.28})
         _check("footprint", fp, {"x", "half_width"})
         _check("slew", cfg.get("slew") or {}, {"accel", "decel"})
@@ -252,7 +258,7 @@ class RuleSpeed:
             build, own_keys, predictive = KINDS[name]
             _check(f"criterion {name}", c, CRITERION_KEYS | own_keys)
             if c.get("enabled", True) and (self.predictive or not predictive):
-                self.criteria.append(Criterion(name, c, build(c, fp, device), num_envs, device))
+                self.criteria.append(Criterion(name, c, build(c, fp, device), predictive, num_envs, device))
         names = {c.name for c in self.criteria}
         self.uses_map = bool(names & {n for n, k in KINDS.items() if k[2]})
         self.distrust_at = cfg.get("distrust_map_at") if "map_mismatch" in names else None
@@ -286,9 +292,14 @@ class RuleSpeed:
                 ratios[n] = ratios[n].masked_fill(bad, 0.0)
 
         v = torch.full((self.n,), self.v_default, device=self.device)
+        strongest = torch.ones(self.n, device=self.device)
         for c in self.criteria:
-            v = v * (1.0 - c.weight * ratios[c.name])
-        v = v.clamp_min(self.v_min)
+            f = 1.0 - c.weight * ratios[c.name]
+            if c.predictive and self.combine == "strongest":
+                strongest = torch.minimum(strongest, f)
+            else:
+                v = v * f
+        v = (v * strongest).clamp_min(self.v_min)
         if self.stall:
             stuck = (x.v_meas < self.stall["v"]) & (self.v_prev >= self.v_min)
             self.stuck_s = torch.where(stuck, self.stuck_s + dt, torch.zeros_like(self.stuck_s))
