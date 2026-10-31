@@ -957,6 +957,13 @@ class FtrEnv(DirectRLEnv):
         _data = cycle(self._reset_info)
         self._reset_info_generate = lambda: next(_data)
 
+    def set_spawn_sequence(self, indices):
+        """Hand out birth entries `indices` (into terrain_cfg.birth), in order and then cycling, at the
+        next resets -- for an eval that must start robot i of the next full reset on a chosen tile."""
+        entries = [self._reset_info[int(i)] for i in indices]
+        _data = cycle(entries)
+        self._reset_info_generate = lambda: next(_data)
+
     def calc_current_frame_height_maps(self, env_ids: "Sequence[int] | None" = None):
         """Recompute the local height map for `env_ids` (all envs when None).
 
