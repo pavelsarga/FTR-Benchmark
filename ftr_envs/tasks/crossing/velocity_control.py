@@ -25,7 +25,7 @@ and the network file is a TorchScript module mapping (hm, proprio) -> v [N] with
 normalisation baked in (written by flipper_training's train_velocity_il.py).
 
 Every controller also gets `state` -- {rpy [N, 3] rad, ang_vel [N, 3] body rad/s, w_cmd [N] rad/s,
-dt s} -- which only RuleVelocity reads.
+pos [N, 2] world xy m, dt s} -- which only RuleVelocity reads.
 """
 import math
 
@@ -134,7 +134,7 @@ class RuleVelocity(VelocityController):
     def __call__(self, hm_hist, proprio_hist, state=None):
         p = proprio_hist[:, -1]
         x = Inputs(hm=hm_hist[:, -1] if self.rules.uses_map else None, v_meas=p[:, 0], flip_vel=p[:, 2:6],
-                   rpy=state["rpy"], ang_vel=state["ang_vel"], w_cmd=state["w_cmd"])
+                   rpy=state["rpy"], ang_vel=state["ang_vel"], w_cmd=state["w_cmd"], pos=state.get("pos"))
         return self.rules(x, state["dt"])
 
 
@@ -185,8 +185,17 @@ class FeatureHistory:
 
 
 def bearing_heading(positions: torch.Tensor, yaw: torch.Tensor, targets: torch.Tensor,
-                    gain: float = 1.5, max_w: float = 1.0) -> torch.Tensor:
-    """auto_ride's heading law: w = clamp(gain * wrap(bearing to target - yaw), +-max_w) [rad/s]."""
+                    gain: float = 1.5, max_w: float = 1.0, distance_ramp: bool = False,
+                    starts: torch.Tensor | None = None) -> torch.Tensor:
+    """auto_ride's heading law: w = clamp(gain * wrap(bearing to target - yaw), +-max_w) [rad/s].
+
+    distance_ramp: the gain times the share of the course driven, dist_driven / course_length
+    (projected on start -> target, 0..1), so the steering is weak while crossing the obstacle --
+    where a turn only splits the track speeds both tracks need -- and full at the goal."""
     bearing = torch.atan2(targets[:, 1] - positions[:, 1], targets[:, 0] - positions[:, 0])
     err = torch.remainder(bearing - yaw + math.pi, 2 * math.pi) - math.pi
-    return (gain * err).clamp(-max_w, max_w)
+    k = gain
+    if distance_ramp:
+        course = (targets - starts)[:, :2]
+        k = gain * (((positions - starts)[:, :2] * course).sum(-1) / course.pow(2).sum(-1).clamp_min(1e-9)).clamp(0.0, 1.0)
+    return (k * err).clamp(-max_w, max_w)

@@ -13,8 +13,14 @@ largest fraction of the speed it can take away. One tick:
     v* = v_default * prod(factors), not below v_min
                   predictive_combine: strongest -- the map criteria give only their smallest factor
                   instead of their product (a log is a step *and* rough: one reduction, not two)
-    stall guard   measured v < stall.v while commanded >= v_min for stall.after_s
-                  -> v* >= stall.boost for stall.boost_s (rules must not pin the robot on an edge)
+    stall guard   progress along the heading over the last window_s < progress_m while commanding
+                  >= v_min -> v* = boost level (the rules are overridden), held until the robot has
+                  made release_m of progress or max_boost_s has passed. A boost that runs out without
+                  progress goes straight to the next level; once the top level runs out, the guard
+                  waits a full window again. Getting through resets the level. The rules must not
+                  pin the robot on an edge, and rocking in place is not progress. With
+                  max_roll_deg, a robot rolled past it gets the first level only: unstick, but no
+                  hard push on a tilted pallet or a diagonal edge.
     caps          a criterion with `cap` and r = 1 limits v* to cap, also below v_min (special cases)
     slew          v moves towards v* by at most accel*dt up / decel*dt down
 
@@ -56,6 +62,7 @@ CENTER_ROW, CENTER_COL = HM_ROWS // 2, HM_COLS // 2
 TOP_KEYS = {"v_default", "v_min", "predictive", "predictive_combine", "distrust_map_at", "footprint", "slew", "stall",
             "criteria"}
 CRITERION_KEYS = {"weight", "mode", "lo", "hi", "trip", "release", "hold_s", "tau", "cap", "enabled"}   # not on/off: YAML booleans
+STALL_KEYS = {"window_s", "progress_m", "release_m", "max_boost_s", "boost", "max_roll_deg"}
 DISTRUSTED = ("step_up", "step_down", "roughness")
 
 
@@ -66,6 +73,7 @@ class Inputs(NamedTuple):
     rpy: torch.Tensor           # [N, 3] rad
     ang_vel: torch.Tensor       # [N, 3] rad/s, body frame
     w_cmd: torch.Tensor         # [N] rad/s
+    pos: torch.Tensor | None = None     # [N, 2] world xy, m (the stall guard's progress)
 
 
 def load_rule_config(path, overrides: dict | None = None) -> dict:
@@ -238,6 +246,82 @@ class Criterion:
         return self.latch.float()
 
 
+class StallGuard:
+    """Progress-based stall guard: a ring of SAMPLES poses spanning window_s gives the progress along
+    the heading of the pose window_s ago. Stalled = less than progress_m of it while commanding; the
+    response is an override at the current boost level until release_m of progress since the boost
+    began; after max_boost_s without it, the next level at once, or -- past the top level -- a fresh
+    window. All envs share dt, so one sample clock serves the batch."""
+
+    SAMPLES = 10
+
+    def __init__(self, c, num_envs, device):
+        _check("stall", c, STALL_KEYS)
+        self.window_s, self.progress_m = float(c["window_s"]), float(c["progress_m"])
+        self.release_m, self.max_boost_s = float(c["release_m"]), float(c["max_boost_s"])
+        self.levels = torch.tensor([float(b) for b in c["boost"]], device=device)
+        self.max_roll = math.radians(float(c["max_roll_deg"])) if c.get("max_roll_deg") is not None else None
+        self.period = self.window_s / self.SAMPLES
+        self.ring = torch.zeros(num_envs, self.SAMPLES, 3, device=device)     # x, y, yaw
+        self.head, self.clock = 0, 0.0
+        self.armed_s = torch.zeros(num_envs, device=device)                   # since the window was (re)filled
+        self.fresh = torch.ones(num_envs, dtype=torch.bool, device=device)
+        self.level = torch.zeros(num_envs, dtype=torch.long, device=device)   # 1-based while boosting
+        self.boosting = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.boost_s = torch.zeros(num_envs, device=device)
+        self.start = torch.zeros(num_envs, 3, device=device)                  # pose where the boost began
+        self.progress = torch.zeros(num_envs, device=device)
+
+    def reset(self, env_ids):
+        self.fresh[env_ids] = True
+        self.level[env_ids] = 0
+        self.boosting[env_ids] = False
+
+    @staticmethod
+    def _along(pose, xy):
+        """Progress of xy from `pose` along pose's heading."""
+        d = xy - pose[:, :2]
+        return d[:, 0] * torch.cos(pose[:, 2]) + d[:, 1] * torch.sin(pose[:, 2])
+
+    def __call__(self, xy, yaw, commanding, dt, roll=None):
+        """Override speed [N] while boosting, NaN elsewhere."""
+        pose = torch.cat([xy, yaw[:, None]], dim=-1)
+        if self.fresh.any():
+            self.ring[self.fresh] = pose[self.fresh, None, :]
+            self.armed_s[self.fresh] = 0.0
+            self.fresh.zero_()
+        self.armed_s += dt
+        self.clock += dt
+        if self.clock >= self.period:
+            self.clock %= self.period
+            self.ring[:, self.head] = pose
+            self.head = (self.head + 1) % self.SAMPLES
+        self.progress = self._along(self.ring[:, self.head], xy)               # the oldest sample, ~window_s ago
+
+        self.boost_s += dt
+        released = self.boosting & (self._along(self.start, xy) >= self.release_m)
+        expired = self.boosting & ~released & (self.boost_s >= self.max_boost_s)
+        escalate = expired & (self.level < len(self.levels))                   # push harder, at once
+        ended = released | (expired & ~escalate)
+        self.level = torch.where(escalate, self.level + 1, self.level.masked_fill(released, 0))
+        self.start = torch.where(escalate[:, None], pose, self.start)
+        self.boost_s = self.boost_s.masked_fill(escalate, 0.0)
+        self.boosting &= ~ended
+        self.fresh |= ended                                                    # a new window from here on
+        self.armed_s = self.armed_s.masked_fill(ended, 0.0)
+
+        stalled = (~self.boosting & ~ended & commanding & (self.armed_s >= self.window_s)
+                   & (self.progress < self.progress_m))
+        self.level = torch.where(stalled, (self.level + 1).clamp_max(len(self.levels)), self.level)
+        self.start = torch.where(stalled[:, None], pose, self.start)
+        self.boost_s = self.boost_s.masked_fill(stalled, 0.0)
+        self.boosting |= stalled
+        level = self.level
+        if self.max_roll is not None:
+            level = torch.where(roll.abs() > self.max_roll, level.clamp_max(1), level)
+        return torch.where(self.boosting, self.levels[(level - 1).clamp_min(0)], torch.full_like(self.progress, math.nan))
+
+
 class RuleSpeed:
     def __init__(self, cfg: dict, num_envs: int = 1, device="cpu"):
         _check("velocity rule config", cfg, TOP_KEYS)
@@ -250,7 +334,6 @@ class RuleSpeed:
         fp = cfg.get("footprint", {"x": [-0.35, 0.35], "half_width": 0.28})
         _check("footprint", fp, {"x", "half_width"})
         _check("slew", cfg.get("slew") or {}, {"accel", "decel"})
-        _check("stall", cfg.get("stall") or {}, {"v", "after_s", "boost", "boost_s"})
         self.criteria = []
         for name, c in cfg["criteria"].items():
             if name not in KINDS:
@@ -266,10 +349,8 @@ class RuleSpeed:
         self.capped = [c for c in self.criteria if c.cap is not None]
         slew = cfg.get("slew") or {}
         self.accel, self.decel = float(slew.get("accel", math.inf)), float(slew.get("decel", math.inf))
-        self.stall = cfg.get("stall")
+        self.stall = StallGuard(cfg["stall"], num_envs, device) if cfg.get("stall") else None
         self.v_prev = torch.zeros(num_envs, device=device)
-        self.stuck_s = torch.zeros(num_envs, device=device)
-        self.boost_s = torch.zeros(num_envs, device=device)
         self.debug = {}           # name -> (metric [N], ratio [N]) of the last tick, plus "target"
 
     def reset(self, env_ids=None):
@@ -277,8 +358,8 @@ class RuleSpeed:
         for c in self.criteria:
             c.reset(env_ids)
         self.v_prev[env_ids] = 0.0
-        self.stuck_s[env_ids] = 0.0
-        self.boost_s[env_ids] = 0.0
+        if self.stall is not None:
+            self.stall.reset(env_ids)
 
     @torch.no_grad()
     def __call__(self, x: Inputs, dt: float) -> torch.Tensor:
@@ -300,19 +381,19 @@ class RuleSpeed:
             else:
                 v = v * f
         v = (v * strongest).clamp_min(self.v_min)
-        if self.stall:
-            stuck = (x.v_meas < self.stall["v"]) & (self.v_prev >= self.v_min)
-            self.stuck_s = torch.where(stuck, self.stuck_s + dt, torch.zeros_like(self.stuck_s))
-            fire = self.stuck_s > self.stall["after_s"]
-            self.boost_s = torch.where(fire, torch.full_like(self.boost_s, self.stall["boost_s"]),
-                                       (self.boost_s - dt).clamp_min(0.0))
-            self.stuck_s = self.stuck_s.masked_fill(fire, 0.0)
-            v = torch.where(self.boost_s > 0, v.clamp_min(self.stall["boost"]), v)
+        if self.stall is not None:
+            if x.pos is None:
+                raise ValueError("the stall guard needs Inputs.pos (world xy)")
+            boost = self.stall(x.pos, x.rpy[:, 2], self.v_prev >= self.v_min - 1e-6, dt, roll=x.rpy[:, 0])
+            v = torch.where(torch.isnan(boost), v, boost)
         for c in self.capped:
             v = torch.where(ratios[c.name] >= 1.0, v.clamp_max(float(c.cap)), v)
 
         self.debug = {n: (metrics[n], ratios[n]) for n in metrics}
         self.debug["target"] = v
+        if self.stall is not None:
+            self.debug["stall"] = (self.stall.level * self.stall.boosting).float()
+            self.debug["progress"] = self.stall.progress
         v = self.v_prev + (v - self.v_prev).clamp(-self.decel * dt, self.accel * dt)
         self.v_prev = v
         return v

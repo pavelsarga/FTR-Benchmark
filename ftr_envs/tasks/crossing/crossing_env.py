@@ -34,6 +34,36 @@ def point_in_rotated_ellipse(x, y, h, k, a, b, theta):
     return term1 + term2 <= 1
 
 
+FAIL_REASONS = ("", "rollover", "shock", "out_of_range_lateral", "out_of_range_along", "out_of_range")
+
+
+def _spot_axes(pos, start, target):
+    """(along, along_start, along_target, across, across_centre) of the obstacle spot: the path axis
+    is whichever world axis start->target mostly runs along."""
+    d = (target - start)[:, :2]
+    along_x = d[:, 0].abs() >= d[:, 1].abs()
+    a = torch.where(along_x, pos[:, 0], pos[:, 1])
+    a0 = torch.where(along_x, start[:, 0], start[:, 1])
+    a1 = torch.where(along_x, target[:, 0], target[:, 1])
+    b = torch.where(along_x, pos[:, 1], pos[:, 0])
+    c = torch.where(along_x, (start[:, 1] + target[:, 1]) / 2, (start[:, 0] + target[:, 0]) / 2)
+    return a, a0, a1, b, c
+
+
+def reached_target_rect(pos, start, target, half_width: float = 10.0 / 6.0):
+    """Success rectangle: the robot has reached the target line (along the path) anywhere within
+    +- half_width of the spot's centre line -- the full width of the obstacle spot, not a circle."""
+    a, a0, a1, b, c = _spot_axes(pos, start, target)
+    return ((a - a1) * torch.sign(a1 - a0) >= 0) & ((b - c).abs() <= half_width)
+
+
+def out_of_range_rect_parts(pos, start, target, x_slack: float = 1.0, half_width: float = 10.0 / 6.0):
+    """out_of_range_rect split into (along the path, across it)."""
+    a, a0, a1, b, c = _spot_axes(pos, start, target)
+    along = (a < torch.minimum(a0, a1) - x_slack) | (a > torch.maximum(a0, a1) + x_slack)
+    return along, (b - c).abs() > half_width
+
+
 @torch.jit.script
 def out_of_range_rect(pos, start, target, x_slack: float = 1.0, half_width: float = 10.0 / 6.0):
     """Axis-aligned rectangle the size of the obstacle "spot": along the path axis it
@@ -273,6 +303,11 @@ class CrossingEnvCfg(FtrEnvCfg):
     out_of_range_shape: str = "ellipse"
     out_of_range_rect_x_slack: float = 1.0
     out_of_range_rect_half_width: float = 10.0 / 6.0
+    # Success: "circle" -- within 0.4 m of the target point -- or "rectangle": the target line
+    # reached anywhere across the spot (+- out_of_range_rect_half_width), i.e. crossed the
+    # obstacle, wherever across the lane. A robot that crossed but drifted 0.5 m sideways is a
+    # failure under the circle (it overshoots and leaves the spot), a success under the rectangle.
+    success_shape: str = "circle"
 
     # Shock-magnitude termination threshold (m/s²).
     # Episode is terminated (fail) when linear acceleration exceeds this value.
@@ -796,18 +831,24 @@ class CrossingEnv(FtrEnv):
         )
 
         # Target reached
-        target_idx = (self.positions[:, :2] - self.target_positions[:, :2]).norm(dim=-1) <= 0.4
+        if self.cfg.success_shape == "rectangle":
+            target_idx = reached_target_rect(self.positions, self.start_positions, self.target_positions,
+                                             self.cfg.out_of_range_rect_half_width)
+        else:
+            target_idx = (self.positions[:, :2] - self.target_positions[:, :2]).norm(dim=-1) <= 0.4
         # Rollover
         rollover_idx = torch.any(
             torch.abs(torch.rad2deg(self.orientations_3[:, :2])) >= self.cfg.rollover_threshold_deg, dim=-1
         )
         # Out of range
         if self.cfg.out_of_range_shape == "rectangle":
-            out_range_idx = out_of_range_rect(
+            out_along_idx, out_lateral_idx = out_of_range_rect_parts(
                 self.positions, self.start_positions, self.target_positions,
                 self.cfg.out_of_range_rect_x_slack, self.cfg.out_of_range_rect_half_width,
             )
+            out_range_idx = out_along_idx | out_lateral_idx
         else:
+            out_along_idx = out_lateral_idx = None
             out_range_idx = out_of_range(
                 self.positions, self.start_positions, self.target_positions,
                 self.cfg.out_of_range_semi_major_slack, self.cfg.out_of_range_semi_minor_slack,
@@ -825,6 +866,13 @@ class CrossingEnv(FtrEnv):
 
         self._success_mask = target_idx
         self._fail_mask = rollover_idx | out_range_idx | shock_high_idx
+        # why it failed, one code per env (FAIL_REASONS), the first cause in this order
+        reason = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        causes = [(rollover_idx, 1), (shock_high_idx, 2)]
+        causes += ([(out_lateral_idx, 3), (out_along_idx, 4)] if out_lateral_idx is not None else [(out_range_idx, 5)])
+        for mask, code in reversed(causes):
+            reason = torch.where(mask, code, reason)
+        self.extras["fail_reason"] = torch.where(self._fail_mask, reason, 0)
         self._explosion_mask = explosion_idx
         self._timeout_mask = timeout_idx
 
