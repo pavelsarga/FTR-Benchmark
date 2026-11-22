@@ -63,7 +63,10 @@ MARV_CFG = ArticulationCfg(
             stiffness=3e4,
             damping=1000,
             effort_limit=1000,
-            velocity_limit=180,
+            # deg/s = 1 rad/s. Only set_robot_env applies it, as physxJoint:maxJointVelocity
+            # (degrees/s for revolute joints); IsaacLab keeps an implicit actuator's
+            # velocity_limit as a soft limit and never writes it to PhysX. Was 180.
+            velocity_limit=57.29577951308232,
             armature=100,
         ),
     },
