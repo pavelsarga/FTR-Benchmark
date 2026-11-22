@@ -20,7 +20,8 @@ largest fraction of the speed it can take away. One tick:
                   waits a full window again. Getting through resets the level. The rules must not
                   pin the robot on an edge, and rocking in place is not progress. With
                   max_roll_deg, a robot rolled past it gets the first level only: unstick, but no
-                  hard push on a tilted pallet or a diagonal edge.
+                  hard push on a tilted pallet or a diagonal edge; likewise max_pitch_down_deg for a
+                  robot pitched nose-down past it (creeping over a lip is deliberate, not a stall).
     caps          a criterion with `cap` and r = 1 limits v* to cap, also below v_min (special cases)
     slew          v moves towards v* by at most accel*dt up / decel*dt down
 
@@ -39,7 +40,7 @@ Criteria (the config key is the criterion's name):
                            footprint (tall grass: the canopy is mapped, not the ground). From
                            r >= distrust_map_at the map is distrusted and step / roughness give 0.
     reactive
-      tilt                 hypot(roll_k * roll, pitch_k * pitch), degrees
+      tilt                 hypot(roll_k * roll, k * pitch), degrees; k = pitch_down_k nose-down (+), pitch_k nose-up
       shake                hypot of the body roll and pitch rates, rad/s
       flippers             largest measured flipper speed, rad/s
       turning              |commanded yaw rate|, rad/s
@@ -62,7 +63,7 @@ CENTER_ROW, CENTER_COL = HM_ROWS // 2, HM_COLS // 2
 TOP_KEYS = {"v_default", "v_min", "predictive", "predictive_combine", "distrust_map_at", "footprint", "slew", "stall",
             "criteria"}
 CRITERION_KEYS = {"weight", "mode", "lo", "hi", "trip", "release", "hold_s", "tau", "cap", "enabled"}   # not on/off: YAML booleans
-STALL_KEYS = {"window_s", "progress_m", "release_m", "max_boost_s", "boost", "max_roll_deg"}
+STALL_KEYS = {"window_s", "progress_m", "release_m", "max_boost_s", "boost", "max_roll_deg", "max_pitch_down_deg"}
 DISTRUSTED = ("step_up", "step_down", "roughness")
 
 
@@ -179,8 +180,14 @@ def _map_mismatch(c, fp, device):
 
 
 def _tilt(c, fp, device):
+    """Roll and pitch in one angle; pitch_down_k (default pitch_k) weighs nose-down pitch (+), pitch_k nose-up."""
     kr, kp = float(c.get("roll_k", 1.0)), float(c.get("pitch_k", 1.0))
-    return lambda x: torch.rad2deg(torch.hypot(kr * x.rpy[:, 0], kp * x.rpy[:, 1]))
+    kd = float(c.get("pitch_down_k", kp))
+
+    def metric(x):
+        pitch = x.rpy[:, 1]
+        return torch.rad2deg(torch.hypot(kr * x.rpy[:, 0], torch.where(pitch > 0, kd, kp) * pitch))
+    return metric
 
 
 KINDS = {   # name: (metric builder, its own config keys, predictive)
@@ -188,7 +195,7 @@ KINDS = {   # name: (metric builder, its own config keys, predictive)
     "step_down": (lambda c, fp, d: _step(c, fp, d, -1.0), {"lookahead", "behind", "baseline"}, True),
     "roughness": (_roughness, {"scales", "quantile", "x", "half_width"}, True),
     "map_mismatch": (_map_mismatch, set(), True),
-    "tilt": (_tilt, {"roll_k", "pitch_k"}, False),
+    "tilt": (_tilt, {"roll_k", "pitch_k", "pitch_down_k"}, False),
     "shake": (lambda c, fp, d: lambda x: torch.hypot(x.ang_vel[:, 0], x.ang_vel[:, 1]), set(), False),
     "flippers": (lambda c, fp, d: lambda x: x.flip_vel.abs().amax(dim=-1), set(), False),
     "turning": (lambda c, fp, d: lambda x: x.w_cmd.abs(), set(), False),
@@ -261,6 +268,7 @@ class StallGuard:
         self.release_m, self.max_boost_s = float(c["release_m"]), float(c["max_boost_s"])
         self.levels = torch.tensor([float(b) for b in c["boost"]], device=device)
         self.max_roll = math.radians(float(c["max_roll_deg"])) if c.get("max_roll_deg") is not None else None
+        self.max_down = math.radians(float(c["max_pitch_down_deg"])) if c.get("max_pitch_down_deg") is not None else None
         self.period = self.window_s / self.SAMPLES
         self.ring = torch.zeros(num_envs, self.SAMPLES, 3, device=device)     # x, y, yaw
         self.head, self.clock = 0, 0.0
@@ -283,7 +291,7 @@ class StallGuard:
         d = xy - pose[:, :2]
         return d[:, 0] * torch.cos(pose[:, 2]) + d[:, 1] * torch.sin(pose[:, 2])
 
-    def __call__(self, xy, yaw, commanding, dt, roll=None):
+    def __call__(self, xy, yaw, commanding, dt, roll=None, pitch=None):
         """Override speed [N] while boosting, NaN elsewhere."""
         pose = torch.cat([xy, yaw[:, None]], dim=-1)
         if self.fresh.any():
@@ -319,6 +327,8 @@ class StallGuard:
         level = self.level
         if self.max_roll is not None:
             level = torch.where(roll.abs() > self.max_roll, level.clamp_max(1), level)
+        if self.max_down is not None:
+            level = torch.where(pitch > self.max_down, level.clamp_max(1), level)
         return torch.where(self.boosting, self.levels[(level - 1).clamp_min(0)], torch.full_like(self.progress, math.nan))
 
 
@@ -384,7 +394,8 @@ class RuleSpeed:
         if self.stall is not None:
             if x.pos is None:
                 raise ValueError("the stall guard needs Inputs.pos (world xy)")
-            boost = self.stall(x.pos, x.rpy[:, 2], self.v_prev >= self.v_min - 1e-6, dt, roll=x.rpy[:, 0])
+            boost = self.stall(x.pos, x.rpy[:, 2], self.v_prev >= self.v_min - 1e-6, dt, roll=x.rpy[:, 0],
+                               pitch=x.rpy[:, 1])
             v = torch.where(torch.isnan(boost), v, boost)
         for c in self.capped:
             v = torch.where(ratios[c.name] >= 1.0, v.clamp_max(float(c.cap)), v)
