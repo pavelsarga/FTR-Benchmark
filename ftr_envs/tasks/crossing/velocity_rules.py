@@ -371,6 +371,10 @@ class RuleSpeed:
         if self.stall is not None:
             self.stall.reset(env_ids)
 
+    # inference_mode(False): the per-env state (criteria, stall guard, v_prev) is rebound here, and a tensor
+    # rebound under an outer torch.inference_mode -- train_diffusion's mid-training eval -- becomes an
+    # inference tensor that the next in-place update outside it (the training rollout, reset) rejects.
+    @torch.inference_mode(False)
     @torch.no_grad()
     def __call__(self, x: Inputs, dt: float) -> torch.Tensor:
         if self.uses_map and x.hm is None:
