@@ -29,6 +29,8 @@ from ftr_envs.assets.articulation.ftr import FtrWheelArticulation
 from ftr_envs.assets.ftr import FTR_CFG, FTR_SIM_CFG
 from ftr_envs.assets.terrain.terrain import Terrain
 from ftr_envs.tasks.crossing.elevation_map_emulator import ElevationMapEmulator
+from ftr_envs.tasks.crossing.randomization import DomainRandomizer
+from ftr_envs.tasks.crossing.spawn_sampler import TileSpawnSampler, describe as describe_spawn_sampler
 from ftr_envs.tasks.crossing.flipper_states import DEFAULT_FLIPPER_STATES_DEG, state_pose_targets, step_flipper_state
 from ftr_envs.tasks.crossing.velocity_control import FeatureHistory, bearing_heading, make_velocity_controller
 from ftr_envs.utils.torch import add_noise, rand_range
@@ -133,6 +135,14 @@ class FtrEnvCfg(DirectRLEnvCfg):
     # elevation-map look for the observed heightmap (elevation_map_emulator.py), e.g.
     # {k_dilate: 3, k_erode: 1, blur_sigma: 1.0}; None = Isaac's exact map
     heightmap_emulation: dict | None = None
+    # Per-robot domain randomization (flipper limits / speed / effort / encoder offset, track speed
+    # cap and L/R gain, latency, mass, CoM, friction; optional ADR). None = off. Keys and value
+    # forms: ftr_envs/tasks/crossing/randomization.py.
+    domain_randomization: dict | None = None
+    # Adaptive spawn sampler over the course's tiles (visit budget, mastery / dead-tile retirement,
+    # learning-progress weighting, course-exhausted signal). None = round-robin over birth.json.
+    # Keys: ftr_envs/tasks/crossing/spawn_sampler.py.
+    spawn_sampler: dict | None = None
 
     # ctrac only: attaches a real ContactSensor for ground-truth per-flipper contact
     # (ctrac_contact.py). Default True (needed for training's reward/C-VAE targets). Set
@@ -384,6 +394,15 @@ class FtrEnv(DirectRLEnv):
         self._explode_pre_ang_vel_high = _z()
         self._explode_pre_obs_nan     = _z()
         self.flipper_target_pos = torch.zeros(self.num_envs, self.flipper_num, device=self.device)
+        self._episode_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._curriculum_paused = False
+        self._dr = None
+        if self.cfg.domain_randomization:
+            if self.cfg.flipper_style:
+                raise ValueError("domain_randomization does not support flipper_style (native track control)")
+            self._dr = DomainRandomizer(self, self.cfg.domain_randomization)
+            self._dr.setup()
+            self._dr.resample(torch.arange(self.num_envs, device=self.device))
         self._prepare_reset_info()
 
         self.start_positions = torch.zeros((self.num_envs, 3), device=self.device)
@@ -450,11 +469,15 @@ class FtrEnv(DirectRLEnv):
             # w action is in [-1, 1] (the policies' action spec); identical to the old
             # clamp(+-track_ang_vel_max) for the default 1.0, a real scale for anything else
             track_w = self.actions[:, 1:2].clamp(-1.0, 1.0) * self.track_ang_vel_max
+            if self._dr is not None:
+                v_dr, w_dr = self._dr.track_command(track_v[:, 0], track_w[:, 0], self._robot.track_gauge)
+                track_v, track_w = v_dr.unsqueeze(-1), w_dr.unsqueeze(-1)
             real_track_cmd = add_noise(torch.cat([track_v, track_w], dim=-1), std=self.baselink_drive_noise_std)
             self._robot.set_v_w(real_track_cmd)
 
+        flipper_target = self.flipper_target_pos if self._dr is None else self.flipper_target_pos + self._dr.enc_offset
         real_flipper_cmd = add_noise(
-            self._calc_comp_flipper_pos(self.flipper_target_pos),
+            self._calc_comp_flipper_pos(flipper_target),
             std=self.flipper_pos_noise_std
         )
         marv_asym_active = (
@@ -603,6 +626,9 @@ class FtrEnv(DirectRLEnv):
 
     def _reset_idx(self, env_ids: Sequence[int]):
         super()._reset_idx(env_ids)
+        self._on_episodes_end(env_ids)
+        if self._dr is not None:
+            self._dr.resample(env_ids)
         n = len(env_ids)
         # Zero root state (pose + velocities) for this batch.
         self._robot.write_root_state_to_sim(torch.zeros(n, 13, device=self.device), env_ids=env_ids)
@@ -624,7 +650,14 @@ class FtrEnv(DirectRLEnv):
             self._vel_ctrl.reset(env_ids)
             self._vel_hist.reset(env_ids)
 
-        reset_infos = [self._reset_info_generate() for _ in range(n)]
+        if self._spawn_sampler is not None and not self._spawn_override:
+            drawn = [self._spawn_sampler.next_entry() for _ in range(n)]
+            reset_infos = [self._reset_info[e] for e, _ in drawn]
+            ids_cpu = env_ids.tolist() if isinstance(env_ids, torch.Tensor) else list(env_ids)
+            for i, (_, t) in zip(ids_cpu, drawn):
+                self._env_tile[int(i)] = t
+        else:
+            reset_infos = [self._reset_info_generate() for _ in range(n)]
         poses = torch.stack([i["pose"] for i in reset_infos]).to(self.device)
         if self.spawn_yaw_range > 0.0:
             yaw = rand_range([-self.spawn_yaw_range, self.spawn_yaw_range], (n,), device=self.device)
@@ -747,8 +780,10 @@ class FtrEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         if self.flipper_only:
             actions = self._flipper_only_actions(actions[:, 2:] if self.policy_full_action else actions)
+        self.last_action[:] = actions  # store raw action before noise / delay
+        if self._dr is not None:
+            actions = self._dr.delay(actions)
         self.actions[:] = actions
-        self.last_action[:] = actions  # store raw action before noise 
 
         # Detect envs whose position OR velocity is NaN or has exploded.
         # These must be teleported to the origin *before* the physics step so PhysX
@@ -841,8 +876,24 @@ class FtrEnv(DirectRLEnv):
                 self.flipper_target_pos = torch.clamp(next_pos, low, high)
         else:
             self.flipper_target_pos.zero_()
+        if self._dr is not None and low is not None:
+            self.flipper_target_pos = self._dr.clamp_flipper(self.flipper_target_pos)
 
     def flipper_angle_bounds(self):
+        """Angle range the flipper action maps onto (radians), ``(low, high)`` of shape
+        ``(flipper_num,)`` or ``(None, None)`` when the flippers are locked.
+
+        Without domain randomization these are the configured limits. With randomized limits
+        it is the fixed ENVELOPE (the widest limits any draw can produce) so an action means the
+        same angle on every robot; each robot then clamps to its own draw (_pre_physics_step).
+        """
+        dr = getattr(self, "_dr", None)
+        low, high = self._nominal_flipper_bounds()
+        if dr is None or low is None or not ({"flipper_up_deg", "flipper_down_deg"} & set(dr.specs)):
+            return low, high
+        return dr.envelope_bounds()
+
+    def _nominal_flipper_bounds(self):
         """Per-flipper angle limits (radians) in flipper_target_pos convention, as a
         ``(low, high)`` pair of ``(flipper_num,)`` tensors — or ``(None, None)`` when the
         flippers are locked horizontal.
@@ -913,7 +964,9 @@ class FtrEnv(DirectRLEnv):
             flipper_pos = flipper_pos[:, [0, 2]]
         elif not self.sync_flipper_control and self.only_front_flipper:
             flipper_pos = flipper_pos[:, [0, 1]]
-
+        dr = getattr(self, "_dr", None)
+        if dr is not None:
+            flipper_pos = flipper_pos - dr.enc_offset
         return flipper_pos
 
     def _calc_comp_flipper_pos(self, flipper_pos):
@@ -944,6 +997,91 @@ class FtrEnv(DirectRLEnv):
 
         return self.reset_terminated[:], self.reset_time_outs[:]
 
+    def _on_episodes_end(self, env_ids):
+        """Called at the top of every reset: the episodes of `env_ids` that were running have just
+        ended, and `_success_mask` (set by CrossingEnv._get_dones earlier in this step) says which
+        succeeded. Feeds ADR (and the spawn sampler). The very first reset ends no episode."""
+        ids = env_ids if isinstance(env_ids, torch.Tensor) else torch.as_tensor(list(env_ids), device=self.device)
+        ids = ids.to(self.device, torch.long)
+        active = self._episode_active[ids]
+        self._episode_active[ids] = True
+        if not active.any():
+            return
+        ended = ids[active]
+        if self._curriculum_paused:
+            # mid-training eval: episodes cut short by the eval's resets are neither successes nor
+            # failures, and eval episodes themselves are not curriculum data
+            self._env_tile[ended.cpu().numpy()] = -1
+            return
+        success = getattr(self, "_success_mask", None)
+        success = success[ended] if success is not None else torch.zeros(len(ended), dtype=torch.bool, device=self.device)
+        if self._dr is not None:
+            self._dr.record_outcomes(ended, success)
+        if self._spawn_sampler is not None:
+            ended_cpu = ended.cpu().numpy()
+            self._spawn_sampler.record(self._env_tile[ended_cpu], success.cpu().numpy())
+            self._env_tile[ended_cpu] = -1
+
+    # ---- spawn sampler interface (trainers / course rotation) ---------------------------
+    def spawn_sampler_pause(self, paused: bool):
+        """Mid-training eval: spawns round-robin, no ADR probes, and no episode outcome reaches the
+        spawn sampler or ADR while paused (including training episodes the eval's reset cuts short)."""
+        self._curriculum_paused = bool(paused)
+        if self._spawn_sampler is not None:
+            self._spawn_sampler.paused = bool(paused)
+        if self._dr is not None:
+            self._dr.paused = bool(paused)
+
+    @property
+    def course_exhausted(self) -> bool:
+        return self._spawn_sampler is not None and self._spawn_sampler.exhausted
+
+    def spawn_stats(self) -> dict:
+        return {} if self._spawn_sampler is None else self._spawn_sampler.stats()
+
+    def write_spawn_snapshot(self, path, extra: dict | None = None):
+        """Per-tile spawn-sampler statistics as JSON (input of ftr_terrain_gen.rotation)."""
+        if self._spawn_sampler is None:
+            raise RuntimeError("write_spawn_snapshot: spawn_sampler is not enabled")
+        meta = {"terrain": self.cfg.terrain_name, **(extra or {})}
+        if self._dr is not None:
+            meta["domain_randomization"] = self._dr.state_dict()
+        self._spawn_sampler.write_snapshot(path, extra=meta)
+
+    def swap_terrain(self, name: str) -> dict:
+        """Replace the course in the running sim (terrain rotation without a relaunch).
+
+        The terrain is a static collider referenced under ``terrain_cfg.prim_path`` and no tensor
+        view points at it, so removing the prim and referencing the new USD at the same path is
+        picked up by PhysX on the next step (measured ~2.5-3.5 s for a 30x10-tile course; robots
+        settle on the new ground, the old collider is gone). Everything derived from the course
+        is rebuilt: heightmap / birth entries / spawn sampler / explosion radius.
+
+        Episodes running on the old course are dropped without an outcome (neither ADR nor the new
+        sampler sees them); the caller must reset every env afterwards (the trainer resets its
+        collector) before stepping again. Returns timings.
+        """
+        import time as _time
+
+        t0 = _time.perf_counter()
+        stage = self.scene.stage
+        new_cfg = Terrain(name, decor=bool(getattr(self.cfg, "terrain_decor", False)))  # fails before touching the stage
+        stage.RemovePrim(self.terrain_cfg.prim_path)
+        new_cfg.apply(stage)
+        t1 = _time.perf_counter()
+        self.terrain_cfg = new_cfg
+        self.cfg.terrain_name = name
+        lower, upper = new_cfg.map.lower[:2], new_cfg.map.upper[:2]
+        self.explosion_pos_threshold = float(((upper - lower) ** 2).sum() ** 0.5)
+        self._episode_active[:] = False   # in-flight episodes end with no outcome
+        self._prepare_reset_info()         # new birth entries + a fresh spawn sampler (keeps cfg.spawn_sampler)
+        if self._curriculum_paused and self._spawn_sampler is not None:
+            self._spawn_sampler.paused = True
+        self.sim.step(render=False)        # PhysX parses the stage change here
+        t2 = _time.perf_counter()
+        print(f"[FtrEnv] terrain swapped to {name}: stage {t1 - t0:.2f}s, physics {t2 - t1:.2f}s", flush=True)
+        return {"stage_s": t1 - t0, "physics_s": t2 - t1}
+
     def _prepare_reset_info(self):
         self._reset_info = self.terrain_cfg.birth
 
@@ -958,6 +1096,13 @@ class FtrEnv(DirectRLEnv):
             info['pose'] = torch.cat([info['start_point'], info['start_orient']])
         _data = cycle(self._reset_info)
         self._reset_info_generate = lambda: next(_data)
+        self._spawn_override = False
+        self._env_tile = np.full(self.num_envs, -1, dtype=np.int64)
+        self._spawn_sampler = None
+        if self.cfg.spawn_sampler is not None:
+            self._spawn_sampler = TileSpawnSampler(self._reset_info, self.cfg.spawn_sampler)
+            print(f"[FtrEnv] spawn sampler: {self._spawn_sampler.T} tiles from {len(self._reset_info)} birth entries; "
+                  f"{describe_spawn_sampler(self.cfg.spawn_sampler)}", flush=True)
 
     def set_spawn_sequence(self, indices):
         """Hand out birth entries `indices` (into terrain_cfg.birth), in order and then cycling, at the
@@ -965,6 +1110,7 @@ class FtrEnv(DirectRLEnv):
         entries = [self._reset_info[int(i)] for i in indices]
         _data = cycle(entries)
         self._reset_info_generate = lambda: next(_data)
+        self._spawn_override = True  # an explicit sequence wins over the adaptive sampler
 
     def calc_current_frame_height_maps(self, env_ids: "Sequence[int] | None" = None):
         """Recompute the local height map for `env_ids` (all envs when None).
